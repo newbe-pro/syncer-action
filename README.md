@@ -67,7 +67,8 @@ The repository workflow lives at [release-sync.yml](./.github/workflows/release-
 - Manual runs use `workflow_dispatch` with optional repository, target, and `dry_run` overrides.
 - Matrix jobs are generated from `syncer-action.config.yml`, one repository-target pair per job.
 - Each sync job writes a GitHub Actions summary and a machine-readable JSON result artifact.
-- The summarize job aggregates results and fails the workflow when the final conclusion is `partial_failure` or `failure`.
+- The summarize job aggregates results, uploads a final summary bundle artifact, and records the workflow conclusion.
+- A separate conclude job fails the workflow after summary/upload complete when the final conclusion is `partial_failure` or `failure`.
 
 Manual run examples:
 
