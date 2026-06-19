@@ -1,0 +1,156 @@
+name: Release Sync
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      repositories:
+        description: Comma-separated or JSON array of owner/repo keys to sync
+        required: false
+        type: string
+      targets:
+        description: Comma-separated or JSON array of target names to sync
+        required: false
+        type: string
+      dry_run:
+        description: Resolve the matrix and transfer plan without uploading or updating Azure metadata
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: release-sync-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      matrix_count: ${{ steps.plan.outputs.matrix_count }}
+      max_parallel: ${{ steps.plan.outputs.max_parallel }}
+      has_work: ${{ steps.plan.outputs.has_work }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build matrix plan
+        id: plan
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NETDISK_123PAN_CLIENT_ID: ${{ secrets.NETDISK_123PAN_CLIENT_ID }}
+          NETDISK_123PAN_CLIENT_SECRET: ${{ secrets.NETDISK_123PAN_CLIENT_SECRET }}
+          AZURE_STORAGE_BLOB_SAS_URL: ${{ secrets.AZURE_STORAGE_BLOB_SAS_URL }}
+          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+          AZURE_STORAGE_CONTAINER: ${{ secrets.AZURE_STORAGE_CONTAINER }}
+          SYNCER_ACTION_CONFIG_FILE: syncer-action.config.yml
+          SYNCER_ACTION_REPOSITORIES: ${{ inputs.repositories }}
+          SYNCER_ACTION_TARGETS: ${{ inputs.targets }}
+          SYNCER_ACTION_DRY_RUN: ${{ inputs.dry_run }}
+        run: npm run plan
+
+  sync:
+    needs: plan
+    if: needs.plan.outputs.has_work == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJson(needs.plan.outputs.max_parallel) }}
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    concurrency:
+      group: release-sync-${{ github.repository }}-${{ matrix.item.repositoryKey }}-${{ matrix.item.targetName }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run sync job
+        id: sync
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NETDISK_123PAN_CLIENT_ID: ${{ secrets.NETDISK_123PAN_CLIENT_ID }}
+          NETDISK_123PAN_CLIENT_SECRET: ${{ secrets.NETDISK_123PAN_CLIENT_SECRET }}
+          AZURE_STORAGE_BLOB_SAS_URL: ${{ secrets.AZURE_STORAGE_BLOB_SAS_URL }}
+          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+          AZURE_STORAGE_CONTAINER: ${{ secrets.AZURE_STORAGE_CONTAINER }}
+          SYNCER_ACTION_CONFIG_FILE: syncer-action.config.yml
+          SYNCER_ACTION_MATRIX_ITEM: ${{ toJson(matrix.item) }}
+          SYNCER_ACTION_RESULTS_DIR: .runtime/results
+        run: npm run sync
+
+      - name: Upload matrix result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-result-${{ matrix.item.repositoryKey }}-${{ matrix.item.targetName }}
+          path: .runtime/results/*.json
+          if-no-files-found: error
+
+  summarize:
+    needs:
+      - plan
+      - sync
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Download matrix results
+        if: needs.plan.outputs.has_work == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sync-result-*
+          merge-multiple: true
+          path: .runtime/results
+
+      - name: Summarize workflow
+        id: summarize
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NETDISK_123PAN_CLIENT_ID: ${{ secrets.NETDISK_123PAN_CLIENT_ID }}
+          NETDISK_123PAN_CLIENT_SECRET: ${{ secrets.NETDISK_123PAN_CLIENT_SECRET }}
+          AZURE_STORAGE_BLOB_SAS_URL: ${{ secrets.AZURE_STORAGE_BLOB_SAS_URL }}
+          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+          AZURE_STORAGE_CONTAINER: ${{ secrets.AZURE_STORAGE_CONTAINER }}
+          SYNCER_ACTION_CONFIG_FILE: syncer-action.config.yml
+          SYNCER_ACTION_RESULTS_DIR: .runtime/results
+        run: npm run summarize
+
+      - name: Fail workflow on summary conclusion
+        if: always()
+        env:
+          WORKFLOW_CONCLUSION: ${{ steps.summarize.outputs.conclusion }}
+        run: |
+          case "$WORKFLOW_CONCLUSION" in
+            failure|partial_failure)
+              echo "Workflow concluded with $WORKFLOW_CONCLUSION"
+              exit 1
+              ;;
+            *)
+              echo "Workflow concluded with $WORKFLOW_CONCLUSION"
+              ;;
+          esac

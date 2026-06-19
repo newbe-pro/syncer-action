@@ -1,0 +1,31 @@
+github:
+  apiBaseUrl: https://api.github.com
+
+azure:
+  prefix: release-sync
+
+concurrency:
+  workflowMaxParallel: 2
+  maxParallelAssets: 2
+
+providers:
+  pan123:
+    errorDetailLevel: diagnostic
+    apiBaseUrl: https://open-api.123pan.com
+
+repositories:
+  - owner: microsoft
+    repo: PowerToys
+    assetExcludePatterns:
+      - "*symbols*"
+    targets:
+      - name: 123pan
+        provider: 123pan
+        targetDirectory: /syncer/powertoys
+
+  - owner: PowerShell
+    repo: PowerShell
+    targets:
+      - name: 123pan
+        provider: 123pan
+        targetDirectory: /syncer/powershell

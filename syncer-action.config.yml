@@ -1,0 +1,95 @@
+github:
+  apiBaseUrl: https://api.github.com
+
+azure:
+  prefix: release-sync
+
+concurrency:
+  workflowMaxParallel: 2
+  maxParallelAssets: 2
+
+providers:
+  pan123:
+    errorDetailLevel: diagnostic
+    apiBaseUrl: https://open-api.123pan.com
+
+repositories:
+  - owner: esengine
+    repo: DeepSeek-Reasonix
+    targetDirectory: /syncer/DeepSeek-Reasonix
+
+  - owner: diegosouzapw
+    repo: OmniRoute
+    targetDirectory: /syncer/OmniRoute
+
+  - owner: farion1231
+    repo: cc-switch
+    targetDirectory: /syncer/cc-switch
+
+  - owner: tinyhumansai
+    repo: openhuman
+    targetDirectory: /syncer/openhuman
+
+  - owner: Hmbown
+    repo: CodeWhale
+    targetDirectory: /syncer/CodeWhale
+
+  - owner: fathah
+    repo: hermes-desktop
+    targetDirectory: /syncer/hermes-desktop
+
+  - owner: ollama
+    repo: ollama
+    targetDirectory: /syncer/ollama
+
+  - owner: microsoft
+    repo: PowerToys
+    targetDirectory: /syncer/powertoys
+    assetExcludePatterns:
+      - "*symbols*"
+
+  - owner: PowerShell
+    repo: PowerShell
+    targetDirectory: /syncer/powershell
+    assetExcludePatterns:
+      - "*symbols*"
+
+  - owner: Eugeny
+    repo: tabby
+    targetDirectory: /syncer/tabby
+
+  - owner: agalwood
+    repo: Motrix
+    targetDirectory: /syncer/motrix
+
+  - owner: marktext
+    repo: marktext
+    targetDirectory: /syncer/marktext
+
+  - owner: desktop
+    repo: desktop
+    targetDirectory: /syncer/github-desktop
+
+  - owner: electron
+    repo: fiddle
+    targetDirectory: /syncer/electron-fiddle
+
+  - owner: go-gitea
+    repo: gitea
+    targetDirectory: /syncer/gitea
+
+  - owner: wez
+    repo: wezterm
+    targetDirectory: /syncer/wezterm
+
+  - owner: mudler
+    repo: LocalAI
+    targetDirectory: /syncer/localai
+
+  - owner: nomic-ai
+    repo: gpt4all
+    targetDirectory: /syncer/gpt4all
+
+  - owner: OpenAgentPlatform
+    repo: Dive
+    targetDirectory: /syncer/dive
