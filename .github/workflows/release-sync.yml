@@ -99,7 +99,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sync-result-${{ matrix.item.repositoryKey }}-${{ matrix.item.targetName }}
+          name: sync-result-${{ matrix.item.owner }}-${{ matrix.item.repo }}-${{ matrix.item.targetName }}
           path: .runtime/results/*.json
           if-no-files-found: error
 
