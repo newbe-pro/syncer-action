@@ -109,6 +109,8 @@ jobs:
       - sync
     if: always()
     runs-on: ubuntu-latest
+    outputs:
+      conclusion: ${{ steps.summarize.outputs.conclusion }}
     steps:
       - uses: actions/checkout@v4
 
@@ -140,11 +142,43 @@ jobs:
           SYNCER_ACTION_RESULTS_DIR: .runtime/results
         run: npm run summarize
 
-      - name: Fail workflow on summary conclusion
+      - name: Prepare summary bundle
         if: always()
         env:
           WORKFLOW_CONCLUSION: ${{ steps.summarize.outputs.conclusion }}
         run: |
+          mkdir -p .runtime/summary
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -f "$GITHUB_STEP_SUMMARY" ]; then
+            cp "$GITHUB_STEP_SUMMARY" .runtime/summary/workflow-summary.md
+          fi
+          printf '%s\n' "$WORKFLOW_CONCLUSION" > .runtime/summary/conclusion.txt
+
+      - name: Upload summary bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-sync-summary
+          path: |
+            .runtime/summary/*
+            .runtime/results/*.json
+          if-no-files-found: error
+
+  conclude:
+    needs:
+      - summarize
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail workflow on summary conclusion
+        env:
+          SUMMARY_JOB_RESULT: ${{ needs.summarize.result }}
+          WORKFLOW_CONCLUSION: ${{ needs.summarize.outputs.conclusion }}
+        run: |
+          if [ "$SUMMARY_JOB_RESULT" != 'success' ]; then
+            echo "Summarize job concluded with $SUMMARY_JOB_RESULT"
+            exit 1
+          fi
+
           case "$WORKFLOW_CONCLUSION" in
             failure|partial_failure)
               echo "Workflow concluded with $WORKFLOW_CONCLUSION"
