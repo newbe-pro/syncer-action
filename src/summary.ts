@@ -165,8 +165,34 @@ export function renderAggregateSummaryMarkdown(results: ReleaseSyncJobResult[]) 
     lines.push('', '### Jobs')
     for (const result of results) {
       lines.push(
-        `- ${result.repositoryKey} -> ${result.targetName}: ${result.conclusion}`,
+        `- ${result.repositoryKey} -> ${result.targetName}: ${result.conclusion} (${result.summary.syncedCount} synced, ${result.summary.skippedCount} skipped, ${result.summary.failedCount} failed)`,
       )
+    }
+  }
+
+  const allFailures = results.flatMap((result) =>
+    result.summary.failures.map((failure) => ({ result, failure })),
+  )
+  if (allFailures.length > 0) {
+    lines.push('', `### Failures (${allFailures.length})`)
+    for (const { result, failure } of allFailures.slice(0, 100)) {
+      const stageSegment = failure.failureStage ? ` (${failure.failureStage})` : ''
+      lines.push(
+        `- ${result.repositoryKey} -> ${result.targetName}: ${failure.assetName}${stageSegment}: ${failure.message}`,
+      )
+    }
+    if (allFailures.length > 100) {
+      lines.push(`- ... and ${allFailures.length - 100} more failure(s).`)
+    }
+  }
+
+  const aggregateMetadataFailures = metadataFailures
+    .map((result) => result.summary.metadataPublicationFailure)
+    .filter((failure): failure is NonNullable<typeof failure> => Boolean(failure))
+  if (aggregateMetadataFailures.length > 0) {
+    lines.push('', `### Metadata publication failures (${aggregateMetadataFailures.length})`)
+    for (const failure of aggregateMetadataFailures) {
+      lines.push(`- ${failure.repositoryKey}: ${failure.message}`)
     }
   }
 

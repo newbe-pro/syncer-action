@@ -122,6 +122,11 @@ async function runSync(flags: Map<string, string>) {
     metadataStore,
     maxParallelAssets: item.maxParallelAssets,
     dryRun: item.dryRun,
+    logger: {
+      info: (message) => process.stdout.write(`${message}\n`),
+      warn: (message) => process.stdout.write(`${message}\n`),
+      error: (message) => process.stderr.write(`${message}\n`),
+    },
   })
   const summary = await runner.run()
   const result = createJobResult({
@@ -162,6 +167,42 @@ async function runSummarize(flags: Map<string, string>) {
   await setGitHubOutput('conclusion', conclusion)
   await setGitHubOutput('job_count', String(results.length))
   await setGitHubOutput('metadata_prefix', config.azure.prefix)
+
+  const totalSynced = results.reduce((total, result) => total + result.summary.syncedCount, 0)
+  const totalSkipped = results.reduce((total, result) => total + result.summary.skippedCount, 0)
+  const totalFailed = results.reduce((total, result) => total + result.summary.failedCount, 0)
+
+  process.stdout.write(
+    `[summarize] ${results.length} job(s): ${totalSynced} synced, ${totalSkipped} skipped, ${totalFailed} failed. Conclusion: ${conclusion}\n`,
+  )
+  for (const result of results) {
+    process.stdout.write(
+      `[summarize]   - ${result.repositoryKey} -> ${result.targetName}: ${result.conclusion} (${result.summary.syncedCount} synced, ${result.summary.skippedCount} skipped, ${result.summary.failedCount} failed)\n`,
+    )
+  }
+
+  const allFailures = results.flatMap((result) =>
+    result.summary.failures.map((failure) => ({ result, failure })),
+  )
+  if (allFailures.length > 0) {
+    process.stderr.write(`[summarize] ${allFailures.length} failure(s) recorded:\n`)
+    for (const { result, failure } of allFailures) {
+      const stageSegment = failure.failureStage ? ` (${failure.failureStage})` : ''
+      process.stderr.write(
+        `[summarize]   - ${result.repositoryKey} -> ${result.targetName}: ${failure.assetName}${stageSegment}: ${failure.message}\n`,
+      )
+    }
+  }
+
+  const metadataFailures = results
+    .map((result) => result.summary.metadataPublicationFailure)
+    .filter((failure): failure is NonNullable<typeof failure> => Boolean(failure))
+  for (const failure of metadataFailures) {
+    process.stderr.write(
+      `[summarize] Metadata publication failed for ${failure.repositoryKey}: ${failure.message}\n`,
+    )
+  }
+
   process.stdout.write(`${conclusion}\n`)
 }
 

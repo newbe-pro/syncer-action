@@ -25,6 +25,7 @@ import {
 
 interface Logger {
   info?(message: string): void
+  warn?(message: string): void
   error?(message: string): void
 }
 
@@ -44,6 +45,76 @@ interface ProcessedAssetResult {
 function isScriptAsset(assetName: string) {
   const normalizedAssetName = assetName.toLowerCase()
   return normalizedAssetName.endsWith('.sh') || normalizedAssetName.endsWith('.ps1')
+}
+
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    return 'unknown size'
+  }
+
+  if (bytes < 1024) {
+    return `${bytes} B`
+  }
+
+  const units = ['KiB', 'MiB', 'GiB', 'TiB']
+  let value = bytes / 1024
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+
+  return `${value.toFixed(value >= 100 ? 0 : value >= 10 ? 1 : 2)} ${units[unitIndex]}`
+}
+
+function formatDiagnosticsForLog(
+  diagnostics: NetdiskFailureDiagnostics | null | undefined,
+): string {
+  if (!diagnostics) {
+    return ''
+  }
+
+  const segments: string[] = []
+
+  const request = diagnostics.request
+  if (request?.method || request?.host || request?.path) {
+    const location = [request?.host, request?.path].filter(Boolean).join('')
+    segments.push(`${request?.method ?? 'REQUEST'} ${location}`.trim())
+  }
+
+  const response = diagnostics.response
+  if (response?.status || response?.statusText || response?.bodyExcerpt) {
+    const status = [response?.status, response?.statusText].filter(Boolean).join(' ')
+    segments.push(status ? `response ${status}` : 'response')
+    if (response?.bodyExcerpt) {
+      segments.push(`body=${response.bodyExcerpt}`)
+    }
+  }
+
+  const provider = diagnostics.provider
+  if (provider?.code || provider?.message) {
+    segments.push(`provider ${provider?.code ?? ''}${provider?.message ? `: ${provider.message}` : ''}`.trim())
+  }
+
+  const transport = diagnostics.transport
+  if (transport?.type || transport?.message) {
+    segments.push(
+      `transport ${transport?.type ?? 'unknown'}${transport?.message ? `: ${transport.message}` : ''}`.trim(),
+    )
+  }
+
+  const retry = diagnostics.retry
+  if (retry?.attempts != null || retry?.maxAttempts != null) {
+    segments.push(
+      `retry ${retry?.attempts ?? 0}/${retry?.maxAttempts ?? '?'}${retry?.intervalMs != null ? ` (~${retry.intervalMs}ms)` : ''}`,
+    )
+  }
+
+  if (segments.length === 0) {
+    return ''
+  }
+
+  return ` [${segments.join('; ')}]`
 }
 
 function isLatestReleaseAsset(asset: GitHubReleaseAsset) {
@@ -323,7 +394,19 @@ export function createReleaseSyncRunner(options: {
   return {
     async run({ signal, onAssetStart } = {}) {
       const startedAt = now().toISOString()
+      logger.info?.(
+        `[release-sync] Run started at ${startedAt} for ${options.source.targets.length} repository target(s)` +
+          (options.dryRun ? ' (dry-run)' : '') +
+          `.`,
+      )
+      logger.info?.(
+        `[release-sync] Provider: ${options.provider.providerName}, max parallel assets: ${maxParallelAssets}.`,
+      )
+      logger.info?.(`[release-sync] Discovering release assets...`)
       const discoveredAssets = await options.source.listReleaseAssets({ signal })
+      logger.info?.(
+        `[release-sync] Discovered ${discoveredAssets.length} asset(s) across ${options.source.targets.length} repository target(s).`,
+      )
       const discoveredAssetsByRepository = new Map<string, GitHubReleaseAsset[]>()
 
       for (const asset of discoveredAssets) {
@@ -372,6 +455,9 @@ export function createReleaseSyncRunner(options: {
           await onAssetStart?.(asset)
 
           if (isScriptAsset(asset.assetName)) {
+            logger.info?.(
+              `[release-sync] Skipping ${asset.assetName}: script assets are not uploaded.`,
+            )
             addOutcome(
               repositorySummary,
               failures,
@@ -393,6 +479,9 @@ export function createReleaseSyncRunner(options: {
             repository.assetExcludePatterns,
           )
           if (matchingAssetExcludePattern) {
+            logger.info?.(
+              `[release-sync] Skipping ${asset.assetName}: matches repository exclusion rule "${matchingAssetExcludePattern}".`,
+            )
             addOutcome(
               repositorySummary,
               failures,
@@ -413,6 +502,9 @@ export function createReleaseSyncRunner(options: {
           const existingRecord = findManifestRecord(currentManifest, asset)
 
           if (shouldSkipWithoutDownload(existingRecord, asset)) {
+            logger.info?.(
+              `[release-sync] Skipping ${asset.assetName}: metadata shows unchanged content (sha256 present).`,
+            )
             addOutcome(
               repositorySummary,
               failures,
@@ -461,11 +553,22 @@ export function createReleaseSyncRunner(options: {
               | Awaited<ReturnType<GitHubReleaseSource['downloadAsset']>>
               | undefined
 
+            logger.info?.(
+              `[release-sync] Processing ${asset.assetName} (${formatBytes(asset.assetSize)}) for ${asset.repositoryKey}@${asset.releaseTagName}.`,
+            )
+
             try {
+              logger.info?.(`[release-sync] Downloading ${asset.assetName}...`)
               downloadedAsset = await options.source.downloadAsset(asset, { signal })
               const file = await describeFile(downloadedAsset.filePath)
+              logger.info?.(
+                `[release-sync] Downloaded ${asset.assetName}: ${formatBytes(file.byteSize)}, sha256=${file.sha256}.`,
+              )
 
               if (existingRecord?.status === 'synced' && existingRecord.sha256 === file.sha256) {
+                logger.info?.(
+                  `[release-sync] Skipping ${asset.assetName}: local digest matches the existing manifest.`,
+                )
                 resultByAssetId.set(asset.assetId, {
                   asset,
                   outcome: createAssetOutcome({
@@ -494,6 +597,9 @@ export function createReleaseSyncRunner(options: {
               }
 
               try {
+                logger.info?.(
+                  `[release-sync] Uploading ${asset.assetName} to ${buildVersionedTargetDirectory(repository.targetDirectory, asset.releaseTagName) ?? '/'} through ${options.provider.providerName}...`,
+                )
                 const receipt = assertValidNetdiskUploadReceipt(
                   options.provider.providerName,
                   asset,
@@ -535,12 +641,19 @@ export function createReleaseSyncRunner(options: {
                     failureMessage: null,
                   }),
                 })
+                logger.info?.(
+                  `[release-sync] Synced ${asset.assetName} through ${receipt.providerName}: ${receipt.shareUrl}`,
+                )
               } catch (error) {
                 const failure = normalizeNetdiskUploadError(
                   options.provider.providerName,
                   asset,
                   error,
                   now(),
+                )
+                logger.error?.(
+                  `[release-sync] Upload failed for ${asset.assetName} (${failure.providerName}/${failure.stage}): ${failure.message}` +
+                    formatDiagnosticsForLog(failure.diagnostics),
                 )
 
                 resultByAssetId.set(asset.assetId, {
@@ -573,6 +686,10 @@ export function createReleaseSyncRunner(options: {
               }
             } catch (error) {
               const message = error instanceof Error ? error.message : 'Unknown download error.'
+              logger.error?.(
+                `[release-sync] Download failed for ${asset.assetName}: ${message}` +
+                  (error instanceof Error && error.stack ? `\n${error.stack}` : ''),
+              )
               resultByAssetId.set(asset.assetId, {
                 asset,
                 outcome: createAssetOutcome({
@@ -626,10 +743,19 @@ export function createReleaseSyncRunner(options: {
           }
 
           if (hasManifestUpdates) {
+            logger.info?.(
+              `[release-sync] Persisting manifest for ${repository.key}@${nextManifest.releaseTagName ?? '<release-tag>'}...`,
+            )
             try {
               manifest = await options.metadataStore.saveManifest(nextManifest)
+              logger.info?.(
+                `[release-sync] Manifest persisted for ${repository.key} (${(nextManifest.blobPath ?? 'in-memory')}).`,
+              )
             } catch (error) {
               metadataPublicationFailure = normalizeMetadataFailure(error, nextManifest)
+              logger.error?.(
+                `[release-sync] Metadata publication failed for ${repository.key}: ${metadataPublicationFailure.message}`,
+              )
             }
           }
         }
@@ -641,30 +767,53 @@ export function createReleaseSyncRunner(options: {
           }
         }
 
+        logger.info?.(
+          `[release-sync] Repository ${repository.key} done: ${repositorySummary.syncedCount} synced, ${repositorySummary.skippedCount} skipped, ${repositorySummary.failedCount} failed.`,
+        )
+
         repositories.push(repositorySummary)
       }
 
       const finishedAt = now().toISOString()
+      const totals = {
+        discovered: repositories.reduce((t, r) => t + r.discoveredAssetCount, 0),
+        processed: repositories.reduce((t, r) => t + r.processedAssetCount, 0),
+        synced: repositories.reduce((t, r) => t + r.syncedCount, 0),
+        skipped: repositories.reduce((t, r) => t + r.skippedCount, 0),
+        failed: repositories.reduce((t, r) => t + r.failedCount, 0),
+      }
+
+      logger.info?.(
+        `[release-sync] Run finished at ${finishedAt}: ${totals.synced} synced, ${totals.skipped} skipped, ${totals.failed} failed (${totals.discovered} discovered, ${totals.processed} processed).`,
+      )
+
+      if (totals.failed > 0 && failures.length > 0) {
+        logger.error?.(`[release-sync] ${failures.length} failure(s) recorded:`)
+        for (const failure of failures) {
+          const stageSegment = failure.failureStage ? ` (${failure.failureStage})` : ''
+          logger.error?.(
+            `[release-sync]   - ${failure.assetName}${stageSegment}: ${failure.message}` +
+              formatDiagnosticsForLog(failure.diagnostics),
+          )
+        }
+      }
+
+      if (metadataPublicationFailure) {
+        logger.error?.(
+          `[release-sync] Metadata publication failed for ${metadataPublicationFailure.repositoryKey}: ${metadataPublicationFailure.message}`,
+        )
+      }
 
       return {
         startedAt,
         finishedAt,
         providerName: options.provider.providerName,
         repositoryCount: options.source.targets.length,
-        discoveredAssetCount: repositories.reduce(
-          (total, repository) => total + repository.discoveredAssetCount,
-          0,
-        ),
-        processedAssetCount: repositories.reduce(
-          (total, repository) => total + repository.processedAssetCount,
-          0,
-        ),
-        syncedCount: repositories.reduce((total, repository) => total + repository.syncedCount, 0),
-        skippedCount: repositories.reduce(
-          (total, repository) => total + repository.skippedCount,
-          0,
-        ),
-        failedCount: repositories.reduce((total, repository) => total + repository.failedCount, 0),
+        discoveredAssetCount: totals.discovered,
+        processedAssetCount: totals.processed,
+        syncedCount: totals.synced,
+        skippedCount: totals.skipped,
+        failedCount: totals.failed,
         repositories,
         failures,
         metadataPublicationFailure,
