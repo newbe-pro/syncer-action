@@ -1,6 +1,7 @@
 import { mkdir, open, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
+  NetdiskProviderError,
   createNetdiskProviderError,
   type NetdiskProvider,
 } from '../netdisk-provider'
@@ -21,6 +22,8 @@ const defaultShareBaseUrl = 'https://www.123pan.com/s/'
 const permanentShareExpireDays = 0
 const defaultUploadPollIntervalMs = 1000
 const defaultMaxUploadStatusPolls = 30
+const defaultTransientRetryMaxAttempts = 3
+const defaultTransientRetryBaseDelayMs = 1000
 const tokenRefreshSafetyWindowMs = 60_000
 const duplicateFileNameErrorMessage = '该目录下文件名重复无法创建'
 const maxDiagnosticBodyLength = 400
@@ -383,6 +386,76 @@ export function createPan123Provider(
   const maxUploadStatusPolls =
     options.maxUploadStatusPolls ?? defaultMaxUploadStatusPolls
 
+  function isRetryableStatusCode(status: number | null | undefined) {
+    return status != null && (status === 408 || status === 409 || status === 423 || status === 425 || status === 429 || status >= 500)
+  }
+
+  function isRetryableProviderCode(code: string | number | null | undefined) {
+    if (typeof code === 'number') {
+      return isRetryableStatusCode(code)
+    }
+
+    if (typeof code !== 'string' || !code.trim()) {
+      return false
+    }
+
+    const parsed = Number(code)
+    return Number.isFinite(parsed) && isRetryableStatusCode(parsed)
+  }
+
+  function isRetryableStageError(stage: 'directory' | 'upload', error: unknown) {
+    if (!(error instanceof NetdiskProviderError)) {
+      return false
+    }
+
+    if (error.providerName !== providerName || error.stage !== stage) {
+      return false
+    }
+
+    const diagnostics = error.diagnostics
+    return (
+      diagnostics?.transport?.type === 'network' ||
+      isRetryableStatusCode(diagnostics?.response?.status) ||
+      isRetryableProviderCode(diagnostics?.provider?.code)
+    )
+  }
+
+  function calculateRetryDelayMs(attempt: number) {
+    return defaultTransientRetryBaseDelayMs * 2 ** Math.max(0, attempt - 1)
+  }
+
+  async function retryStageOperation<T>(
+    stage: 'directory' | 'upload',
+    action: (retry: NetdiskFailureDiagnostics['retry']) => Promise<T>,
+  ) {
+    for (
+      let attempt = 1;
+      attempt <= defaultTransientRetryMaxAttempts;
+      attempt += 1
+    ) {
+      const retry = {
+        attempts: attempt,
+        maxAttempts: defaultTransientRetryMaxAttempts,
+        intervalMs: calculateRetryDelayMs(attempt),
+      } satisfies NetdiskFailureDiagnostics['retry']
+
+      try {
+        return await action(retry)
+      } catch (error) {
+        if (
+          attempt >= defaultTransientRetryMaxAttempts ||
+          !isRetryableStageError(stage, error)
+        ) {
+          throw error
+        }
+
+        await sleep(retry.intervalMs ?? defaultTransientRetryBaseDelayMs)
+      }
+    }
+
+    throw new Error(`Retry operation for ${stage} exhausted unexpectedly.`)
+  }
+
   async function requestJson<T>(
     pathname: string,
     body: Record<string, unknown>,
@@ -611,43 +684,47 @@ export function createPan123Provider(
     let parentId: Pan123FileId = 0
 
     for (const segment of targetDirectory.split('/').filter(Boolean)) {
-      const entries = await listDirectory(token, request, parentId)
-      const existingDirectory = entries.find(
-        (entry) => entry.type === 1 && entry.filename === segment,
-      )
+      parentId = await retryStageOperation('directory', async (retry) => {
+        const entries = await listDirectory(token, request, parentId)
+        const existingDirectory = entries.find(
+          (entry) => entry.type === 1 && entry.filename === segment,
+        )
 
-      if (existingDirectory) {
-        parentId = existingDirectory.fileId
-        continue
-      }
+        if (existingDirectory) {
+          return existingDirectory.fileId
+        }
 
-      const createdDirectory = await requestJson<Pan123CreateDirectoryResponse>(
-        '/upload/v1/file/mkdir',
-        {
-          name: segment,
-          parentID: parentId,
-        },
-        request,
-        'directory',
-        token,
-      )
+        const createdDirectory = await requestJson<Pan123CreateDirectoryResponse>(
+          '/upload/v1/file/mkdir',
+          {
+            name: segment,
+            parentID: parentId,
+          },
+          request,
+          'directory',
+          token,
+          'POST',
+          retry,
+        )
 
-      const directoryId = createdDirectory.list?.[0]?.dirID
-      if (!directoryId) {
-        throw createNetdiskProviderError({
-          providerName,
-          stage: 'directory',
-          asset: request.asset,
-          error: '123Pan directory creation did not return a dirID.',
-          diagnostics: buildDiagnostics({
-            detailLevel: errorDetailLevel,
-            url: new URL(`${apiBaseUrl}/upload/v1/file/mkdir`),
-            method: 'POST',
-          }),
-        })
-      }
+        const directoryId = createdDirectory.list?.[0]?.dirID
+        if (!directoryId) {
+          throw createNetdiskProviderError({
+            providerName,
+            stage: 'directory',
+            asset: request.asset,
+            error: '123Pan directory creation did not return a dirID.',
+            diagnostics: buildDiagnostics({
+              detailLevel: errorDetailLevel,
+              url: new URL(`${apiBaseUrl}/upload/v1/file/mkdir`),
+              method: 'POST',
+              retry,
+            }),
+          })
+        }
 
-      parentId = directoryId
+        return directoryId
+      })
     }
 
     return parentId
@@ -718,78 +795,83 @@ export function createPan123Provider(
         )
         const chunk = Buffer.allocUnsafe(expectedLength)
         const { bytesRead } = await handle.read(chunk, 0, expectedLength, offset)
-        const uploadUrl = await requestJson<Pan123UploadUrlResponse>(
-          '/upload/v1/file/get_upload_url',
-          {
-            preuploadID: createdFile.preuploadID,
-            sliceNo,
-          },
-          request,
-          'upload',
-          token,
-          'POST',
-          undefined,
-          uploadLogContext,
-        )
 
-        let response: Response
-        const uploadUrlObject = new URL(uploadUrl.presignedURL)
-        try {
-          response = await fetcher(uploadUrl.presignedURL, {
-            method: 'PUT',
-            headers: {
-              'Content-Type': 'application/octet-stream',
+        await retryStageOperation('upload', async (retry) => {
+          const uploadUrl = await requestJson<Pan123UploadUrlResponse>(
+            '/upload/v1/file/get_upload_url',
+            {
+              preuploadID: createdFile.preuploadID,
+              sliceNo,
             },
-            body: chunk.subarray(0, bytesRead),
-            signal: request.signal,
-          })
-        } catch (error) {
-          appendRecentUploadLog(uploadLogContext, {
-            occurredAt: now().toISOString(),
-            message: error instanceof Error ? error.message : String(error),
-          })
-          throw createNetdiskProviderError({
-            providerName,
-            stage: 'upload',
-            asset: request.asset,
-            error,
-            diagnostics: buildDiagnostics({
-              detailLevel: errorDetailLevel,
-              url: uploadUrlObject,
-              method: 'PUT',
-              transport: {
-                type: 'network',
-                message: error instanceof Error ? error.message : String(error),
-                causes: collectErrorCauses(error),
-              },
-              retry: buildRetryDiagnostics(undefined, uploadLogContext),
-            }),
-          })
-        }
+            request,
+            'upload',
+            token,
+            'POST',
+            retry,
+            uploadLogContext,
+          )
 
-        if (!response.ok) {
-          const responseText = await response.text()
-          appendRecentUploadLog(uploadLogContext, {
-            occurredAt: now().toISOString(),
-            httpStatus: response.status,
-            statusText: response.statusText,
-            message: `123Pan PUT upload failed with ${response.status} ${response.statusText}.`,
-          })
-          throw createNetdiskProviderError({
-            providerName,
-            stage: 'upload',
-            asset: request.asset,
-            error: `123Pan PUT upload failed with ${response.status} ${response.statusText}.`,
-            diagnostics: buildDiagnostics({
-              detailLevel: errorDetailLevel,
-              url: uploadUrlObject,
+          let response: Response
+          const uploadUrlObject = new URL(uploadUrl.presignedURL)
+          try {
+            response = await fetcher(uploadUrl.presignedURL, {
               method: 'PUT',
-              response,
-              responseBody: responseText,
-              retry: buildRetryDiagnostics(undefined, uploadLogContext),
-            }),
-          })
-        }
+              headers: {
+                'Content-Type': 'application/octet-stream',
+              },
+              body: chunk.subarray(0, bytesRead),
+              signal: request.signal,
+            })
+          } catch (error) {
+            appendRecentUploadLog(uploadLogContext, {
+              occurredAt: now().toISOString(),
+              attempt: retry?.attempts,
+              message: error instanceof Error ? error.message : String(error),
+            })
+            throw createNetdiskProviderError({
+              providerName,
+              stage: 'upload',
+              asset: request.asset,
+              error,
+              diagnostics: buildDiagnostics({
+                detailLevel: errorDetailLevel,
+                url: uploadUrlObject,
+                method: 'PUT',
+                transport: {
+                  type: 'network',
+                  message: error instanceof Error ? error.message : String(error),
+                  causes: collectErrorCauses(error),
+                },
+                retry: buildRetryDiagnostics(retry, uploadLogContext),
+              }),
+            })
+          }
+
+          if (!response.ok) {
+            const responseText = await response.text()
+            appendRecentUploadLog(uploadLogContext, {
+              occurredAt: now().toISOString(),
+              attempt: retry?.attempts,
+              httpStatus: response.status,
+              statusText: response.statusText,
+              message: `123Pan PUT upload failed with ${response.status} ${response.statusText}.`,
+            })
+            throw createNetdiskProviderError({
+              providerName,
+              stage: 'upload',
+              asset: request.asset,
+              error: `123Pan PUT upload failed with ${response.status} ${response.statusText}.`,
+              diagnostics: buildDiagnostics({
+                detailLevel: errorDetailLevel,
+                url: uploadUrlObject,
+                method: 'PUT',
+                response,
+                responseBody: responseText,
+                retry: buildRetryDiagnostics(retry, uploadLogContext),
+              }),
+            })
+          }
+        })
 
         updateUploadProgress(uploadLogContext, offset + bytesRead)
       }

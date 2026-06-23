@@ -769,6 +769,7 @@ describe('createPan123NetdiskProvider', () => {
       clientId: 'client-id',
       clientSecret: 'client-secret',
       tokenCachePath: path.join(directory, 'token-cache.json'),
+      sleep: async () => {},
       fetch: async (input) => {
         const url = typeof input === 'string' ? input : input.toString()
         if (url.endsWith('/api/v1/access_token')) {
@@ -806,6 +807,11 @@ describe('createPan123NetdiskProvider', () => {
           code: 500,
           message: 'mkdir failed',
         },
+        retry: {
+          attempts: 3,
+          maxAttempts: 3,
+          intervalMs: 4000,
+        },
       },
     })
   })
@@ -818,6 +824,7 @@ describe('createPan123NetdiskProvider', () => {
       clientId: 'client-id',
       clientSecret: 'client-secret',
       tokenCachePath: path.join(directory, 'token-cache.json'),
+      sleep: async () => {},
       fetch: async (input) => {
         const url = typeof input === 'string' ? input : input.toString()
         if (url.endsWith('/api/v1/access_token')) {
@@ -878,6 +885,11 @@ describe('createPan123NetdiskProvider', () => {
           status: 500,
           statusText: 'broken upload',
         },
+        retry: {
+          attempts: 3,
+          maxAttempts: 3,
+          intervalMs: 4000,
+        },
       },
     })
   })
@@ -890,6 +902,7 @@ describe('createPan123NetdiskProvider', () => {
       clientId: 'client-id',
       clientSecret: 'client-secret',
       tokenCachePath: path.join(directory, 'token-cache.json'),
+      sleep: async () => {},
       fetch: async (input, init) => {
         const url = typeof input === 'string' ? input : input.toString()
         if (url.endsWith('/api/v1/access_token')) {
@@ -947,12 +960,24 @@ describe('createPan123NetdiskProvider', () => {
     await expect(provider.uploadAsset(request)).rejects.toMatchObject({
       diagnostics: {
         retry: {
+          attempts: 3,
+          maxAttempts: 3,
+          intervalMs: 4000,
           recentLogs: [
             expect.objectContaining({
+              attempt: 3,
               httpStatus: 500,
               message: '123Pan PUT upload failed with 500 rate limited.',
               uploadedBytes: 4,
               totalBytes: 12,
+            }),
+            expect.objectContaining({
+              attempt: 2,
+              httpStatus: 500,
+            }),
+            expect.objectContaining({
+              attempt: 1,
+              httpStatus: 500,
             }),
           ],
         },
@@ -1245,6 +1270,7 @@ describe('createPan123NetdiskProvider', () => {
       clientId: 'client-id',
       clientSecret: 'client-secret',
       tokenCachePath: path.join(directory, 'token-cache.json'),
+      sleep: async () => {},
       fetch: async (input) => {
         const url = typeof input === 'string' ? input : input.toString()
         if (url.endsWith('/api/v1/access_token')) {
@@ -1300,6 +1326,160 @@ describe('createPan123NetdiskProvider', () => {
     expect(error.diagnostics?.retry?.recentLogs?.[0]?.message).toBe(
       'fetch failed token=[redacted]',
     )
+    expect(error.diagnostics?.retry?.recentLogs?.[0]?.attempt).toBe(3)
+  })
+
+  it('retries transient directory creation failures and eventually succeeds', async () => {
+    const request = await createUploadRequest()
+    const directory = await createTempDirectory()
+    let mkdirCallCount = 0
+
+    const provider = createPan123NetdiskProvider({
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      tokenCachePath: path.join(directory, 'token-cache.json'),
+      sleep: async () => {},
+      fetch: async (input) => {
+        const url = typeof input === 'string' ? input : input.toString()
+        if (url.endsWith('/api/v1/access_token')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: {
+              accessToken: 'token-1',
+              expiredAt: '2026-04-10T01:00:00.000Z',
+            },
+          })
+        }
+        if (url.includes('/api/v2/file/list')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { lastFileId: '-1', fileList: [] },
+          })
+        }
+        if (url.endsWith('/upload/v1/file/mkdir')) {
+          mkdirCallCount += 1
+          if (mkdirCallCount < 3) {
+            return createJsonResponse({ code: 500, message: 'mkdir failed', data: null })
+          }
+
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { list: [{ filename: 'syncer', dirID: 'target-dir' }] },
+          })
+        }
+        if (url.endsWith('/upload/v1/file/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { reuse: true, fileID: 'remote-file-1' },
+          })
+        }
+        if (url.endsWith('/api/v1/share/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { shareID: 1, shareKey: 'share-key' },
+          })
+        }
+
+        throw new Error(`Unexpected request: ${url}`)
+      },
+    })
+
+    await expect(provider.uploadAsset(request)).resolves.toMatchObject({
+      providerName: '123pan',
+      remoteFileId: 'remote-file-1',
+      shareUrl: 'https://www.123pan.com/s/share-key',
+    })
+    expect(mkdirCallCount).toBe(4)
+  })
+
+  it('retries transient PUT upload failures and eventually succeeds', async () => {
+    const request = await createUploadRequest()
+    const directory = await createTempDirectory()
+    let putCallCount = 0
+
+    const provider = createPan123NetdiskProvider({
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      tokenCachePath: path.join(directory, 'token-cache.json'),
+      sleep: async () => {},
+      fetch: async (input) => {
+        const url = typeof input === 'string' ? input : input.toString()
+        if (url.endsWith('/api/v1/access_token')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: {
+              accessToken: 'token-1',
+              expiredAt: '2026-04-10T01:00:00.000Z',
+            },
+          })
+        }
+        if (url.includes('/api/v2/file/list')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { lastFileId: '-1', fileList: [] },
+          })
+        }
+        if (url.endsWith('/upload/v1/file/mkdir')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { list: [{ filename: 'syncer', dirID: 'target-dir' }] },
+          })
+        }
+        if (url.endsWith('/upload/v1/file/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { reuse: false, preuploadID: 'preupload-1', sliceSize: 1024 },
+          })
+        }
+        if (url.endsWith('/upload/v1/file/get_upload_url')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { presignedURL: 'https://upload.123pan.example/part-1' },
+          })
+        }
+        if (url === 'https://upload.123pan.example/part-1') {
+          putCallCount += 1
+          if (putCallCount < 3) {
+            return new Response(null, { status: 500, statusText: 'temporary failure' })
+          }
+
+          return new Response(null, { status: 200 })
+        }
+        if (url.endsWith('/upload/v1/file/upload_complete')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { async: false, completed: true, fileID: 'remote-file-1' },
+          })
+        }
+        if (url.endsWith('/api/v1/share/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { shareID: 1, shareKey: 'share-key' },
+          })
+        }
+
+        throw new Error(`Unexpected request: ${url}`)
+      },
+    })
+
+    await expect(provider.uploadAsset(request)).resolves.toMatchObject({
+      providerName: '123pan',
+      remoteFileId: 'remote-file-1',
+      shareUrl: 'https://www.123pan.com/s/share-key',
+    })
+    expect(putCallCount).toBe(3)
   })
 
   it('omits verbose headers and body excerpts in summary detail mode', async () => {
