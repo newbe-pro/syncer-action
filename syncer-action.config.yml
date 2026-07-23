@@ -5,8 +5,8 @@ azure:
   prefix: release-sync
 
 concurrency:
-  workflowMaxParallel: 2
-  maxParallelAssets: 2
+  workflowMaxParallel: 1
+  maxParallelAssets: 1
 
 providers:
   pan123:
