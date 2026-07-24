@@ -3,7 +3,7 @@ import { loadSyncerActionConfig, resolveWorkflowRunOverrides, toGitHubTargetRepo
 import { createGitHubReleaseSource } from './github-release-source'
 import {
   createReleaseSyncMetadataStore,
-} from './metadata/azure-manifest-store'
+} from './metadata/drafter-release-manifest-store'
 import { createPan123Provider } from './providers/pan123-provider'
 import {
   createReleaseSyncRunner,
@@ -105,11 +105,23 @@ async function runSync(flags: Map<string, string>) {
   }
 
   const provider = createPan123Provider(config.providers.pan123)
+  const metadataOwner = config.metadataStorage.owner
+  const metadataRepo = config.metadataStorage.repo
+  if (!metadataOwner || !metadataRepo) {
+    throw new Error(
+      'metadataStorage.owner/repo is required (set metadataStorage in config or GITHUB_REPOSITORY).',
+    )
+  }
+  if (!config.github.token) {
+    throw new Error('GITHUB_TOKEN is required to read/write drafter release metadata assets.')
+  }
+
   const metadataStore = createReleaseSyncMetadataStore({
-    connectionString: config.azure.connectionString,
-    containerName: config.azure.containerName,
-    containerSasUrl: config.azure.containerSasUrl,
-    prefix: config.azure.prefix,
+    owner: metadataOwner,
+    repo: metadataRepo,
+    prefix: config.metadataStorage.prefix,
+    token: config.github.token,
+    apiBaseUrl: config.github.apiBaseUrl,
   })
   const runner = createReleaseSyncRunner({
     source: createGitHubReleaseSource({
@@ -146,7 +158,7 @@ async function runSync(flags: Map<string, string>) {
   await setGitHubOutput('repository_key', item.repositoryKey)
   await setGitHubOutput('target_name', item.targetName)
   await setGitHubOutput('failed_count', String(summary.failedCount))
-  await setGitHubOutput('metadata_prefix', config.azure.prefix)
+  await setGitHubOutput('metadata_prefix', config.metadataStorage.prefix)
   process.stdout.write(`${formatReleaseSyncRunSummary(summary)}\n`)
 
   if (result.conclusion === 'partial_failure' || result.conclusion === 'failure') {
@@ -166,7 +178,7 @@ async function runSummarize(flags: Map<string, string>) {
   await appendGitHubStepSummary(markdown)
   await setGitHubOutput('conclusion', conclusion)
   await setGitHubOutput('job_count', String(results.length))
-  await setGitHubOutput('metadata_prefix', config.azure.prefix)
+  await setGitHubOutput('metadata_prefix', config.metadataStorage.prefix)
 
   const totalSynced = results.reduce((total, result) => total + result.summary.syncedCount, 0)
   const totalSkipped = results.reduce((total, result) => total + result.summary.skippedCount, 0)

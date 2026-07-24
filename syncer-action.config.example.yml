@@ -1,8 +1,9 @@
 github:
   apiBaseUrl: https://api.github.com
 
-azure:
+metadataStorage:
   prefix: release-sync
+  releaseSelector: latest-draft
 
 concurrency:
   workflowMaxParallel: 2

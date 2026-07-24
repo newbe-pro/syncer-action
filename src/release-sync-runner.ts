@@ -21,7 +21,7 @@ import {
 import {
   MetadataPublicationError,
   type ReleaseSyncMetadataStore,
-} from './metadata/azure-manifest-store'
+} from './metadata/drafter-release-manifest-store'
 
 interface Logger {
   info?(message: string): void

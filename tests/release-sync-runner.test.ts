@@ -685,7 +685,7 @@ describe('createReleaseSyncRunner', () => {
       loadManifest: vi.fn(async () => createManifest()),
       loadManifestIndex: vi.fn(),
       saveManifest: vi.fn(async () => {
-        throw new Error('azure write exploded')
+        throw new Error('metadata write exploded')
       }),
     }
     const source = {
@@ -716,6 +716,6 @@ describe('createReleaseSyncRunner', () => {
     expect(summary.failedCount).toBe(0)
     expect(summary.repositories[0]?.outcomes[0]?.status).toBe('synced')
     expect(summary.failures).toEqual([])
-    expect(summary.metadataPublicationFailure?.message).toContain('azure write exploded')
+    expect(summary.metadataPublicationFailure?.message).toContain('metadata write exploded')
   })
 })

@@ -31,8 +31,9 @@ async function createJsonWorkspace(config: unknown) {
 
 describe('loadSyncerActionConfig', () => {
   it('parses repositories, targets, concurrency, and required secrets', async () => {
-    const rootDirectory = await createYamlWorkspace(`azure:
+    const rootDirectory = await createYamlWorkspace(`metadataStorage:
   prefix: release-sync
+  releaseSelector: latest-draft
 concurrency:
   workflowMaxParallel: 4
   maxParallelAssets: 3
@@ -52,8 +53,8 @@ repositories:
       source: {
         NETDISK_123PAN_CLIENT_ID: 'client-id',
         NETDISK_123PAN_CLIENT_SECRET: 'client-secret',
-        AZURE_STORAGE_BLOB_SAS_URL:
-          'https://storage.blob.core.windows.net/release-sync?sv=2024-11-04&spr=https&sp=rcwl&sig=test',
+        GITHUB_TOKEN: 'gh-token',
+        GITHUB_REPOSITORY: 'acme/syncer-action',
       },
     })
 
@@ -64,84 +65,104 @@ repositories:
         targets: [
           expect.objectContaining({
             name: '123pan-cn',
+            provider: '123pan',
             targetDirectory: '/syncer/codex',
             maxParallelAssets: 3,
           }),
         ],
       }),
     ])
-    expect(config.concurrency).toEqual({ workflowMaxParallel: 4, maxParallelAssets: 3 })
-    expect(config.azure).toEqual({
-      connectionString: undefined,
-      containerName: undefined,
-      containerSasUrl:
-        'https://storage.blob.core.windows.net/release-sync?sv=2024-11-04&spr=https&sp=rcwl&sig=test',
+    expect(config.concurrency).toEqual({
+      workflowMaxParallel: 4,
+      maxParallelAssets: 3,
+    })
+    expect(config.metadataStorage).toEqual({
+      owner: 'acme',
+      repo: 'syncer-action',
       prefix: 'release-sync',
+      releaseSelector: 'latest-draft',
     })
     expect(config.requiredSecrets).toEqual([
       'NETDISK_123PAN_CLIENT_ID',
       'NETDISK_123PAN_CLIENT_SECRET',
-      'AZURE_STORAGE_BLOB_SAS_URL',
     ])
   })
 
-  it('fails fast when 123pan credentials are missing', async () => {
+  it('defaults metadataStorage prefix and releaseSelector', async () => {
     const rootDirectory = await createYamlWorkspace(`repositories:
   - owner: openai
     repo: codex
     targetDirectory: /syncer/codex
 `)
 
-    expect(() =>
-      loadSyncerActionConfig({
-        rootDirectory,
-        source: {},
-      }),
-    ).toThrow(/123Pan targets require NETDISK_123PAN_CLIENT_ID, NETDISK_123PAN_CLIENT_SECRET/i)
-  })
-
-  it('fails fast when azure metadata credentials are missing', async () => {
-    const rootDirectory = await createYamlWorkspace(`repositories:
-  - owner: openai
-    repo: codex
-    targetDirectory: /syncer/codex
-`)
-
-    expect(() =>
-      loadSyncerActionConfig({
-        rootDirectory,
-        source: {
-          NETDISK_123PAN_CLIENT_ID: 'client-id',
-          NETDISK_123PAN_CLIENT_SECRET: 'client-secret',
-        },
-      }),
-    ).toThrow(/AZURE_STORAGE_BLOB_SAS_URL or AZURE_STORAGE_CONNECTION_STRING is required/i)
-  })
-
-  it('requires a container name when using connection string mode', async () => {
-    const rootDirectory = await createYamlWorkspace(`repositories:
-  - owner: openai
-    repo: codex
-    targetDirectory: /syncer/codex
-`)
-
-    expect(() =>
-      loadSyncerActionConfig({
-        rootDirectory,
-        source: {
-          NETDISK_123PAN_CLIENT_ID: 'client-id',
-          NETDISK_123PAN_CLIENT_SECRET: 'client-secret',
-          AZURE_STORAGE_CONNECTION_STRING: 'UseDevelopmentStorage=true',
-        },
-      }),
-    ).toThrow(/AZURE_STORAGE_CONTAINER is required/i)
-  })
-
-  it('keeps explicit json config compatibility', async () => {
-    const rootDirectory = await createJsonWorkspace({
-      azure: {
-        prefix: 'release-sync',
+    const config = loadSyncerActionConfig({
+      rootDirectory,
+      source: {
+        NETDISK_123PAN_CLIENT_ID: 'client-id',
+        NETDISK_123PAN_CLIENT_SECRET: 'client-secret',
+        GITHUB_TOKEN: 'gh-token',
+        GITHUB_REPOSITORY: 'acme/syncer-action',
       },
+    })
+
+    expect(config.metadataStorage).toEqual({
+      owner: 'acme',
+      repo: 'syncer-action',
+      prefix: 'release-sync',
+      releaseSelector: 'latest-draft',
+    })
+  })
+
+  it('uses explicit metadataStorage owner/repo over GITHUB_REPOSITORY', async () => {
+    const rootDirectory = await createYamlWorkspace(`metadataStorage:
+  owner: other
+  repo: meta-store
+  prefix: custom-prefix
+repositories:
+  - owner: openai
+    repo: codex
+    targetDirectory: /syncer/codex
+`)
+
+    const config = loadSyncerActionConfig({
+      rootDirectory,
+      source: {
+        NETDISK_123PAN_CLIENT_ID: 'client-id',
+        NETDISK_123PAN_CLIENT_SECRET: 'client-secret',
+        GITHUB_TOKEN: 'gh-token',
+        GITHUB_REPOSITORY: 'acme/syncer-action',
+      },
+    })
+
+    expect(config.metadataStorage).toEqual({
+      owner: 'other',
+      repo: 'meta-store',
+      prefix: 'custom-prefix',
+      releaseSelector: 'latest-draft',
+    })
+  })
+
+  it('requires 123Pan credentials when 123pan targets are configured', async () => {
+    const rootDirectory = await createYamlWorkspace(`repositories:
+  - owner: openai
+    repo: codex
+    targetDirectory: /syncer/codex
+`)
+
+    expect(() =>
+      loadSyncerActionConfig({
+        rootDirectory,
+        source: {
+          GITHUB_TOKEN: 'gh-token',
+          GITHUB_REPOSITORY: 'acme/syncer-action',
+        },
+      }),
+    ).toThrow(/NETDISK_123PAN_CLIENT_ID/)
+  })
+
+  it('accepts JSON config as a compatibility fallback', async () => {
+    const rootDirectory = await createJsonWorkspace({
+      metadataStorage: { prefix: 'release-sync' },
       repositories: [
         {
           owner: 'openai',
@@ -156,30 +177,25 @@ repositories:
       source: {
         NETDISK_123PAN_CLIENT_ID: 'client-id',
         NETDISK_123PAN_CLIENT_SECRET: 'client-secret',
-        AZURE_STORAGE_CONNECTION_STRING: 'UseDevelopmentStorage=true',
-        AZURE_STORAGE_CONTAINER: 'release-sync',
+        GITHUB_TOKEN: 'gh-token',
+        GITHUB_REPOSITORY: 'acme/syncer-action',
       },
     })
 
-    expect(config.configFilePath.endsWith('syncer-action.config.json')).toBe(true)
-    expect(config.azure).toEqual({
-      connectionString: 'UseDevelopmentStorage=true',
-      containerName: 'release-sync',
-      containerSasUrl: undefined,
-      prefix: 'release-sync',
-    })
+    expect(config.repositories[0]?.key).toBe('openai/codex')
+    expect(config.metadataStorage.prefix).toBe('release-sync')
   })
 })
 
 describe('resolveWorkflowRunOverrides', () => {
-  it('parses repository, target, and dry-run overrides from workflow inputs', () => {
-    expect(
-      resolveWorkflowRunOverrides({
-        INPUT_REPOSITORIES: 'openai/codex, microsoft/PowerToys',
-        INPUT_TARGETS: '["123pan"]',
-        INPUT_DRY_RUN: 'true',
-      }),
-    ).toEqual({
+  it('parses repository and target filters from env', () => {
+    const overrides = resolveWorkflowRunOverrides({
+      SYNCER_ACTION_REPOSITORIES: 'openai/codex,microsoft/PowerToys',
+      SYNCER_ACTION_TARGETS: '123pan',
+      SYNCER_ACTION_DRY_RUN: 'true',
+    })
+
+    expect(overrides).toEqual({
       repositoryKeys: ['openai/codex', 'microsoft/PowerToys'],
       targetNames: ['123pan'],
       dryRun: true,

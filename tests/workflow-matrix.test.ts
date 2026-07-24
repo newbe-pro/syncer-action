@@ -11,11 +11,11 @@ const baseConfig: SyncerActionConfig = {
     apiBaseUrl: 'https://api.github.com',
     token: 'token',
   },
-  azure: {
-    connectionString: undefined,
-    containerName: undefined,
-    containerSasUrl: 'https://storage.blob.core.windows.net/release-sync?sv=2024-11-04&spr=https&sp=rcwl&sig=test',
+  metadataStorage: {
+    owner: 'acme',
+    repo: 'syncer-action',
     prefix: 'release-sync',
+    releaseSelector: 'latest-draft',
   },
   concurrency: {
     workflowMaxParallel: 2,

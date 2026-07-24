@@ -44,11 +44,11 @@ export interface SyncerActionConfig {
     token?: string
     apiBaseUrl: string
   }
-  azure: {
-    connectionString?: string
-    containerName?: string
-    containerSasUrl?: string
+  metadataStorage: {
+    owner?: string
+    repo?: string
     prefix: string
+    releaseSelector: 'latest-draft'
   }
   concurrency: {
     workflowMaxParallel: number
@@ -88,11 +88,14 @@ const configSchema = z.object({
       apiBaseUrl: z.string().trim().url().optional(),
     })
     .default({}),
-  azure: z
+  metadataStorage: z
     .object({
+      owner: z.string().trim().min(1).optional(),
+      repo: z.string().trim().min(1).optional(),
       prefix: z.string().trim().min(1).default('release-sync'),
+      releaseSelector: z.literal('latest-draft').default('latest-draft'),
     })
-    .default({ prefix: 'release-sync' }),
+    .default({ prefix: 'release-sync', releaseSelector: 'latest-draft' }),
   concurrency: z
     .object({
       workflowMaxParallel: z.number().int().positive().default(2),
@@ -251,7 +254,12 @@ function validateRequiredSecrets(input: {
   rootDirectory: string
   pan123ErrorDetailLevel: NetdiskErrorDetailLevel
   pan123ApiBaseUrl?: string
-  azurePrefix: string
+  metadataStorage: {
+    owner?: string
+    repo?: string
+    prefix: string
+    releaseSelector: 'latest-draft'
+  }
   githubApiBaseUrl: string
   workflowMaxParallel: number
   maxParallelAssets: number
@@ -264,15 +272,13 @@ function validateRequiredSecrets(input: {
   const needsPan123 = input.repositories.some((repository) =>
     repository.targets.some((target) => target.provider === '123pan'),
   )
-  const azureContainerSasUrl = normalizeOptionalString(source.AZURE_STORAGE_BLOB_SAS_URL)
-  const azureConnectionString = normalizeOptionalString(source.AZURE_STORAGE_CONNECTION_STRING)
-  const azureContainerName = normalizeOptionalString(source.AZURE_STORAGE_CONTAINER)
   const pan123ClientId = normalizeOptionalString(source.NETDISK_123PAN_CLIENT_ID)
   const pan123ClientSecret = normalizeOptionalString(source.NETDISK_123PAN_CLIENT_SECRET)
   const pan123TokenCachePath = path.resolve(
     input.rootDirectory,
     normalizeOptionalString(source.NETDISK_123PAN_TOKEN_CACHE_PATH) ?? '.runtime/123pan-access-token.json',
   )
+  const githubToken = normalizeOptionalString(source.GITHUB_TOKEN)
 
   if (needsPan123 && (!pan123ClientId || !pan123ClientSecret)) {
     const missing = [
@@ -288,22 +294,17 @@ function validateRequiredSecrets(input: {
     requiredSecrets.push('NETDISK_123PAN_CLIENT_ID', 'NETDISK_123PAN_CLIENT_SECRET')
   }
 
-  if (hasRepositories && !azureContainerSasUrl && !azureConnectionString) {
-    throw new Error(
-      'AZURE_STORAGE_BLOB_SAS_URL or AZURE_STORAGE_CONNECTION_STRING is required when repositories are configured.',
-    )
+  if (hasRepositories && !githubToken) {
+    requiredSecrets.push('GITHUB_TOKEN')
   }
 
-  if (azureConnectionString && !azureContainerName) {
-    throw new Error(
-      'AZURE_STORAGE_CONTAINER is required when AZURE_STORAGE_CONNECTION_STRING is configured.',
-    )
-  }
-
-  if (azureContainerSasUrl) {
-    requiredSecrets.push('AZURE_STORAGE_BLOB_SAS_URL')
-  } else if (azureConnectionString) {
-    requiredSecrets.push('AZURE_STORAGE_CONNECTION_STRING', 'AZURE_STORAGE_CONTAINER')
+  const githubRepository = normalizeOptionalString(source.GITHUB_REPOSITORY)
+  let metadataOwner = input.metadataStorage.owner
+  let metadataRepo = input.metadataStorage.repo
+  if ((!metadataOwner || !metadataRepo) && githubRepository) {
+    const [owner, repo] = githubRepository.split('/', 2)
+    metadataOwner = metadataOwner ?? normalizeOptionalString(owner)
+    metadataRepo = metadataRepo ?? normalizeOptionalString(repo)
   }
 
   return {
@@ -320,14 +321,14 @@ function validateRequiredSecrets(input: {
         normalizeOptionalString(source.SYNCER_ACTION_RESULTS_DIR) ?? '.runtime/results',
       ),
       github: {
-        token: normalizeOptionalString(source.GITHUB_TOKEN),
+        token: githubToken,
         apiBaseUrl: input.githubApiBaseUrl,
       },
-      azure: {
-        connectionString: azureConnectionString,
-        containerName: azureContainerName,
-        containerSasUrl: azureContainerSasUrl,
-        prefix: input.azurePrefix,
+      metadataStorage: {
+        owner: metadataOwner,
+        repo: metadataRepo,
+        prefix: input.metadataStorage.prefix,
+        releaseSelector: input.metadataStorage.releaseSelector,
       },
       concurrency: {
         workflowMaxParallel: input.workflowMaxParallel,
@@ -375,7 +376,12 @@ export function loadSyncerActionConfig(options?: {
     rootDirectory,
     pan123ErrorDetailLevel: parsedConfig.providers.pan123.errorDetailLevel,
     pan123ApiBaseUrl: parsedConfig.providers.pan123.apiBaseUrl,
-    azurePrefix: parsedConfig.azure.prefix,
+    metadataStorage: {
+      owner: parsedConfig.metadataStorage.owner,
+      repo: parsedConfig.metadataStorage.repo,
+      prefix: parsedConfig.metadataStorage.prefix,
+      releaseSelector: parsedConfig.metadataStorage.releaseSelector,
+    },
     githubApiBaseUrl: parsedConfig.github.apiBaseUrl ?? 'https://api.github.com',
     workflowMaxParallel: parsedConfig.concurrency.workflowMaxParallel,
     maxParallelAssets: parsedConfig.concurrency.maxParallelAssets,

@@ -159,6 +159,7 @@ export interface ReleaseSyncManifest {
   updatedAt: string
   records: ReleaseSyncRecord[]
   etag?: string
+  /** Logical storage path (not an Azure Blob path). */
   blobPath?: string
 }
 
@@ -198,6 +199,7 @@ export interface ReleaseSyncManifestIndex {
   updatedAt: string
   repositories: ReleaseSyncManifestIndexRepositoryEntry[]
   etag?: string
+  /** Logical storage path (not an Azure Blob path). */
   blobPath?: string
 }
 
