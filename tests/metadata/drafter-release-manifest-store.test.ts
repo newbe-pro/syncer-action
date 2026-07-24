@@ -8,7 +8,11 @@ import {
   type DrafterReleaseGitHubClient,
   type ReleaseAssetRef,
 } from '../../src/metadata/drafter-release-manifest-store'
-import type { ReleaseSyncManifest, ReleaseSyncManifestIndex, ReleaseSyncRecord } from '../../src/release-sync-contracts'
+import type {
+  ReleaseSyncManifest,
+  ReleaseSyncManifestIndex,
+  ReleaseSyncRecord,
+} from '../../src/release-sync-contracts'
 
 function createRecord(overrides: Partial<ReleaseSyncRecord> = {}): ReleaseSyncRecord {
   return {
@@ -45,7 +49,6 @@ class InMemoryDrafterClient implements DrafterReleaseGitHubClient {
   private readonly assetsByRelease = new Map<number, Map<string, ReleaseAssetRef & { body: string }>>()
   private nextAssetId = 1
   failUploadFor: string | null = null
-  failDeleteFor: string | null = null
 
   constructor(
     releases: Array<{
@@ -92,9 +95,6 @@ class InMemoryDrafterClient implements DrafterReleaseGitHubClient {
     for (const assets of this.assetsByRelease.values()) {
       for (const [name, asset] of assets.entries()) {
         if (asset.id === assetId) {
-          if (this.failDeleteFor === name) {
-            throw new Error(`delete failed for ${name}`)
-          }
           assets.delete(name)
           return
         }
@@ -139,13 +139,24 @@ class InMemoryDrafterClient implements DrafterReleaseGitHubClient {
 describe('logicalPathToAssetName', () => {
   it('flattens logical paths with a stable delimiter', () => {
     expect(logicalPathToAssetName('release-sync/index.json')).toBe('release-sync__index.json')
-    expect(logicalPathToAssetName('release-sync/owner/repo/v1.0.0/manifest.json')).toBe(
-      'release-sync__owner__repo__v1.0.0__manifest.json',
+    expect(logicalPathToAssetName('release-sync/owner/repo/manifest.json')).toBe(
+      'release-sync__owner__repo__manifest.json',
     )
   })
 
   it('rejects unsafe path segments', () => {
     expect(() => logicalPathToAssetName('release-sync/../secret')).toThrow(/Unsafe path segment/)
+  })
+})
+
+describe('buildReleaseSyncManifestBlobName', () => {
+  it('uses one file per repository, not per release tag', () => {
+    expect(buildReleaseSyncManifestBlobName('openai/codex', 'release-sync', 'v1.0.0')).toBe(
+      'release-sync/openai/codex/manifest.json',
+    )
+    expect(buildReleaseSyncManifestBlobName('openai/codex', 'release-sync', 'v2.0.0')).toBe(
+      'release-sync/openai/codex/manifest.json',
+    )
   })
 })
 
@@ -208,7 +219,7 @@ describe('createDrafterReleaseManifestStore', () => {
       repositoryKey: 'openai/codex',
       releaseTagName: 'v1.0.0',
       records: [],
-      blobPath: 'release-sync/openai/codex/v1.0.0/manifest.json',
+      blobPath: 'release-sync/openai/codex/manifest.json',
     })
     await expect(store.loadManifestIndex()).resolves.toMatchObject({
       repositories: [],
@@ -228,7 +239,7 @@ describe('createDrafterReleaseManifestStore', () => {
     await expect(store.loadManifest('openai/codex', 'v1.0.0')).rejects.toThrow(/No draft \(drafter\) release/)
   })
 
-  it('saves a versioned manifest asset and upserts the root index', async () => {
+  it('saves one repository manifest asset and upserts the root index', async () => {
     const client = new InMemoryDrafterClient()
     const store = createReleaseSyncMetadataStore({
       owner: 'acme',
@@ -246,7 +257,7 @@ describe('createDrafterReleaseManifestStore', () => {
       records: [createRecord()],
     })
 
-    expect(saved.blobPath).toBe('release-sync/openai/codex/v1.0.0/manifest.json')
+    expect(saved.blobPath).toBe('release-sync/openai/codex/manifest.json')
     expect(saved.updatedAt).toBe('2026-04-10T08:00:00.000Z')
 
     const manifestAssetName = logicalPathToAssetName(saved.blobPath!)
@@ -263,14 +274,56 @@ describe('createDrafterReleaseManifestStore', () => {
       expect.objectContaining({
         repositoryKey: 'openai/codex',
         releaseTagName: 'v1.0.0',
-        manifestPath: 'release-sync/openai/codex/v1.0.0/manifest.json',
+        manifestPath: 'release-sync/openai/codex/manifest.json',
         recordCount: 1,
         status: 'synced',
       }),
     ])
   })
 
-  it('replaces an existing same-named asset on save', async () => {
+  it('keeps multiple release tags in the same repository asset', async () => {
+    const client = new InMemoryDrafterClient()
+    const store = createReleaseSyncMetadataStore({
+      owner: 'acme',
+      repo: 'syncer',
+      client,
+      now: () => new Date('2026-04-10T08:00:00.000Z'),
+    })
+
+    await store.saveManifest({
+      repositoryKey: 'openai/codex',
+      releaseTagName: 'v1.0.0',
+      version: 1,
+      updatedAt: '2026-04-09T00:00:00.000Z',
+      records: [
+        createRecord({ assetName: 'old.zip', releaseTagName: 'v1.0.0', assetId: 1 }),
+        createRecord({
+          assetName: 'new.zip',
+          releaseTagName: 'v2.0.0',
+          assetId: 2,
+          releaseId: 102,
+        }),
+      ],
+    })
+
+    const loaded = await store.loadManifest('openai/codex')
+    expect(loaded.blobPath).toBe('release-sync/openai/codex/manifest.json')
+    expect(loaded.records.map((record) => record.releaseTagName).sort()).toEqual(['v1.0.0', 'v2.0.0'])
+
+    const assets = await client.listReleaseAssets(55)
+    const manifestAssets = assets.filter((asset) => asset.name.includes('manifest.json'))
+    expect(manifestAssets).toHaveLength(1)
+    expect(manifestAssets[0]?.name).toBe('release-sync__openai__codex__manifest.json')
+
+    const index = await store.loadManifestIndex()
+    const repo = index.repositories.find((entry) => entry.repositoryKey === 'openai/codex')
+    expect(repo?.releases.map((release) => release.releaseTagName).sort()).toEqual(['v1.0.0', 'v2.0.0'])
+    expect(repo?.releases.every((release) => release.manifestPath === 'release-sync/openai/codex/manifest.json')).toBe(
+      true,
+    )
+  })
+
+  it('replaces the same repository asset on save', async () => {
     const client = new InMemoryDrafterClient()
     const store = createReleaseSyncMetadataStore({
       owner: 'acme',
@@ -299,9 +352,7 @@ describe('createDrafterReleaseManifestStore', () => {
     expect(loaded.records).toEqual([expect.objectContaining({ assetName: 'second.zip' })])
 
     const assets = await client.listReleaseAssets(55)
-    const manifestAssets = assets.filter((asset) =>
-      asset.name.includes('manifest.json'),
-    )
+    const manifestAssets = assets.filter((asset) => asset.name.includes('manifest.json'))
     expect(manifestAssets).toHaveLength(1)
   })
 
@@ -361,35 +412,6 @@ describe('createDrafterReleaseManifestStore', () => {
     expect(persisted?.records[0]?.assetName).toBe('app.zip')
   })
 
-  it('loads the latest versioned manifest when releaseTagName is omitted', async () => {
-    const client = new InMemoryDrafterClient()
-    const store = createReleaseSyncMetadataStore({
-      owner: 'acme',
-      repo: 'syncer',
-      client,
-      now: () => new Date('2026-04-10T08:00:00.000Z'),
-    })
-
-    await store.saveManifest({
-      repositoryKey: 'openai/codex',
-      releaseTagName: 'v1.0.0',
-      version: 1,
-      updatedAt: '2026-04-09T00:00:00.000Z',
-      records: [createRecord({ assetName: 'old.zip' })],
-    })
-    await store.saveManifest({
-      repositoryKey: 'openai/codex',
-      releaseTagName: 'v2.0.0',
-      version: 1,
-      updatedAt: '2026-04-09T00:00:00.000Z',
-      records: [createRecord({ assetName: 'new.zip', releaseTagName: 'v2.0.0' })],
-    })
-
-    const loaded = await store.loadManifest('openai/codex')
-    expect(loaded.releaseTagName).toBe('v2.0.0')
-    expect(loaded.records[0]?.assetName).toBe('new.zip')
-  })
-
   it('keeps deterministic repository upsert ordering in the root index', async () => {
     const client = new InMemoryDrafterClient()
     let tick = 0
@@ -405,14 +427,14 @@ describe('createDrafterReleaseManifestStore', () => {
       releaseTagName: 'v1.0.0',
       version: 1,
       updatedAt: '2026-04-09T00:00:00.000Z',
-      records: [createRecord({ assetName: 'z.zip' })],
+      records: [createRecord({ repositoryKey: 'zeta/app', assetName: 'z.zip' })],
     })
     await store.saveManifest({
       repositoryKey: 'alpha/app',
       releaseTagName: 'v1.0.0',
       version: 1,
       updatedAt: '2026-04-09T00:00:00.000Z',
-      records: [createRecord({ assetName: 'a.zip' })],
+      records: [createRecord({ repositoryKey: 'alpha/app', assetName: 'a.zip' })],
     })
 
     const index = client.readJson<ReleaseSyncManifestIndex>(55, 'release-sync/index.json')

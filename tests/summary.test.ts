@@ -41,7 +41,7 @@ describe('determineWorkflowRunConclusion', () => {
           metadataPublicationFailure: {
             repositoryKey: 'openai/codex',
             message: 'index refresh failed',
-            manifestPath: 'release-sync/openai/codex/v1.0.0/manifest.json',
+            manifestPath: 'release-sync/openai/codex/manifest.json',
             rootIndexPath: 'release-sync/index.json',
             manifestPersisted: true,
             occurredAt: '2026-06-19T00:01:00.000Z',

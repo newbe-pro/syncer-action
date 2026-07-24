@@ -219,16 +219,13 @@ function summarizeManifestStatus(records: ReleaseSyncRecord[]): {
 
 function summarizeManifestForReleaseEntry(
   manifest: ReleaseSyncManifest,
+  releaseTagName: string,
+  records: ReleaseSyncRecord[],
 ): ReleaseSyncManifestIndexReleaseEntry {
-  const releaseTagName = manifest.releaseTagName?.trim()
-  if (!releaseTagName) {
-    throw new Error(
-      `A releaseTagName is required to summarize the manifest for ${manifest.repositoryKey}.`,
-    )
-  }
-
   const { owner, repo, displayName } = parseRepositoryIdentity(manifest.repositoryKey)
-  const { status, lastAttemptedAt, lastSuccessfulAt } = summarizeManifestStatus(manifest.records)
+  const { status, lastAttemptedAt, lastSuccessfulAt } = summarizeManifestStatus(records)
+  const manifestPath =
+    manifest.blobPath ?? buildReleaseSyncManifestBlobName(manifest.repositoryKey)
 
   return {
     repositoryKey: manifest.repositoryKey,
@@ -236,8 +233,8 @@ function summarizeManifestForReleaseEntry(
     repo,
     displayName,
     releaseTagName,
-    manifestPath: manifest.blobPath ?? buildReleaseSyncManifestBlobName(manifest.repositoryKey),
-    recordCount: manifest.records.length,
+    manifestPath,
+    recordCount: records.length,
     updatedAt: manifest.updatedAt,
     lastAttemptedAt,
     lastSuccessfulAt,
@@ -245,6 +242,22 @@ function summarizeManifestForReleaseEntry(
   }
 }
 
+function groupManifestRecordsByReleaseTag(records: ReleaseSyncRecord[]) {
+  const groups = new Map<string, ReleaseSyncRecord[]>()
+  for (const record of records) {
+    const tag = record.releaseTagName?.trim()
+    if (!tag) {
+      continue
+    }
+    const existing = groups.get(tag)
+    if (existing) {
+      existing.push(record)
+    } else {
+      groups.set(tag, [record])
+    }
+  }
+  return groups
+}
 
 function compareManifestIndexReleaseEntries(
   left: ReleaseSyncManifestIndexReleaseEntry,
@@ -321,22 +334,31 @@ function upsertManifestIndexRepository(
   updatedAt: string,
   blobPath: string,
 ): ReleaseSyncManifestIndex {
-  const nextRelease = summarizeManifestForReleaseEntry(manifest)
-  const existingRepository = index.repositories.find(
-    (entry) => entry.repositoryKey === manifest.repositoryKey,
+  const grouped = groupManifestRecordsByReleaseTag(manifest.records)
+  const releaseTags = [...grouped.keys()]
+  if (releaseTags.length === 0) {
+    const fallbackTag = manifest.releaseTagName?.trim()
+    if (!fallbackTag) {
+      throw new Error(
+        `A releaseTagName is required to summarize the manifest for ${manifest.repositoryKey}.`,
+      )
+    }
+    releaseTags.push(fallbackTag)
+    grouped.set(fallbackTag, [])
+  }
+
+  const nextReleases = releaseTags.map((releaseTagName) =>
+    summarizeManifestForReleaseEntry(
+      manifest,
+      releaseTagName,
+      grouped.get(releaseTagName) ?? [],
+    ),
   )
-  const nextReleases = [
-    ...(existingRepository?.releases.filter(
-      (release) => release.releaseTagName !== nextRelease.releaseTagName,
-    ) ?? []),
-    nextRelease,
-  ]
   const nextRepository = summarizeRepositoryEntry(manifest.repositoryKey, nextReleases)
   const repositories = [
     ...index.repositories.filter((entry) => entry.repositoryKey !== manifest.repositoryKey),
     nextRepository,
   ].sort(compareManifestIndexRepositoryEntries)
-
   return {
     version: 1,
     updatedAt,
@@ -354,44 +376,14 @@ export function buildReleaseSyncManifestBlobPrefix(
   return `${prefix.replace(/\/+$/, '')}/${owner}/${repo}`
 }
 
-
+/** One logical manifest file per software/repository (not per release tag). */
 export function buildReleaseSyncManifestBlobName(
   repositoryKey: string,
   prefix = 'release-sync',
-  releaseTagName?: string | null,
+  _releaseTagName?: string | null,
 ) {
-  const repositoryPrefix = buildReleaseSyncManifestBlobPrefix(repositoryKey, prefix)
-
-  if (!releaseTagName?.trim()) {
-    return `${repositoryPrefix}/<release-tag>/manifest.json`
-  }
-
-  return `${repositoryPrefix}/${releaseTagName}/manifest.json`
+  return `${buildReleaseSyncManifestBlobPrefix(repositoryKey, prefix)}/manifest.json`
 }
-
-
-function extractReleaseTagNameFromBlobName(
-  repositoryKey: string,
-  prefix: string,
-  blobName: string,
-) {
-  const repositoryPrefix = `${buildReleaseSyncManifestBlobPrefix(repositoryKey, prefix)}/`
-  const manifestSuffix = '/manifest.json'
-
-  if (!blobName.startsWith(repositoryPrefix) || !blobName.endsWith(manifestSuffix)) {
-    return null
-  }
-
-  const releaseTagName = blobName.slice(
-    repositoryPrefix.length,
-    blobName.length - manifestSuffix.length,
-  )
-
-  return releaseTagName || null
-}
-
-
-
 
 export function logicalPathToAssetName(logicalPath: string) {
   const normalized = logicalPath.replace(/^\/+/, '').replace(/\/+$/, '')
@@ -731,58 +723,21 @@ export function createDrafterReleaseManifestStore(options: {
     }
   }
 
-  async function findLatestManifestLogicalPath(repositoryKey: string, releaseId: number) {
-    const repositoryPrefix = `${buildReleaseSyncManifestBlobPrefix(repositoryKey, prefix)}/`
-    const assets = await client.listReleaseAssets(releaseId)
-    let latest:
-      | {
-          logicalPath: string
-          updatedAt: number
-        }
-      | undefined
-
-    for (const asset of assets) {
-      const logicalPath = assetNameToLogicalPath(asset.name)
-      if (!logicalPath.startsWith(repositoryPrefix) || !logicalPath.endsWith('/manifest.json')) {
-        continue
-      }
-
-      const updatedAt = asset.updatedAt ? Date.parse(asset.updatedAt) : asset.id
-      if (!latest || updatedAt >= latest.updatedAt) {
-        latest = {
-          logicalPath,
-          updatedAt: Number.isNaN(updatedAt) ? asset.id : updatedAt,
-        }
-      }
-    }
-
-    return latest?.logicalPath
-  }
 
   return {
     async loadManifest(repositoryKey, releaseTagName) {
       const draft = await resolveStorage()
-      const logicalPath =
-        releaseTagName?.trim()
-          ? buildReleaseSyncManifestBlobName(repositoryKey, prefix, releaseTagName)
-          : await findLatestManifestLogicalPath(repositoryKey, draft.id)
-
-      if (!logicalPath) {
-        return createEmptyManifest(
-          repositoryKey,
-          now(),
-          releaseTagName ?? null,
-          buildReleaseSyncManifestBlobName(repositoryKey, prefix, releaseTagName),
-        )
-      }
-
-      const resolvedReleaseTagName =
-        releaseTagName ?? extractReleaseTagNameFromBlobName(repositoryKey, prefix, logicalPath)
+      const logicalPath = buildReleaseSyncManifestBlobName(repositoryKey, prefix)
 
       try {
         const { contents, etag } = await downloadJsonByLogicalPath(draft.id, logicalPath)
         if (!contents?.trim()) {
-          return createEmptyManifest(repositoryKey, now(), resolvedReleaseTagName, logicalPath)
+          return createEmptyManifest(
+            repositoryKey,
+            now(),
+            releaseTagName ?? null,
+            logicalPath,
+          )
         }
 
         const parsed = JSON.parse(contents) as {
@@ -796,12 +751,17 @@ export function createDrafterReleaseManifestStore(options: {
           parsed.records ?? [],
           parsed.updatedAt ?? now().toISOString(),
           etag,
-          parsed.releaseTagName ?? resolvedReleaseTagName ?? null,
+          releaseTagName?.trim() || parsed.releaseTagName || null,
           logicalPath,
         )
       } catch (error) {
         if (isNotFoundError(error)) {
-          return createEmptyManifest(repositoryKey, now(), resolvedReleaseTagName, logicalPath)
+          return createEmptyManifest(
+            repositoryKey,
+            now(),
+            releaseTagName ?? null,
+            logicalPath,
+          )
         }
         throw normalizeGitHubMetadataError(
           error,
