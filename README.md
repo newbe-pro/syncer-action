@@ -1,6 +1,6 @@
 # syncer-action
 
-`syncer-action` runs GitHub Release to 123Pan synchronization directly inside GitHub Actions. The repository list and sync behavior are stored in-repo as YAML, while release metadata stays in Azure Blob Storage so other applications can continue reading the same `manifest.json` and `index.json` contract.
+`syncer-action` runs GitHub Release to 123Pan synchronization directly inside GitHub Actions. The repository list and sync behavior are stored in-repo as YAML, while release metadata is stored as assets on this repository's latest **draft (drafter) release** so other applications can continue reading the same `manifest.json` and `index.json` contract.
 
 ## Required Secrets
 
@@ -9,14 +9,10 @@
 - `NETDISK_123PAN_CLIENT_ID`
 - `NETDISK_123PAN_CLIENT_SECRET`
 
-Azure metadata, choose one mode:
-
-- Recommended: `AZURE_STORAGE_BLOB_SAS_URL`
-- Or: `AZURE_STORAGE_CONNECTION_STRING` and `AZURE_STORAGE_CONTAINER`
-
 GitHub:
 
 - `GITHUB_TOKEN` is provided automatically in Actions as `${{ github.token }}`
+- The workflow needs `contents: write` so metadata assets can be uploaded to the draft release
 
 ## Config File
 
@@ -25,13 +21,12 @@ The sync target list is stored directly in this repo at `syncer-action.config.ym
 You can start from [syncer-action.config.example.yml](./syncer-action.config.example.yml). JSON is still accepted as a compatibility fallback, but YAML is the default.
 
 ```yaml
-azure:
+metadataStorage:
   prefix: release-sync
-
+  releaseSelector: latest-draft
 concurrency:
   workflowMaxParallel: 2
   maxParallelAssets: 2
-
 repositories:
   - owner: microsoft
     repo: PowerToys
@@ -50,47 +45,42 @@ repositories:
         targetDirectory: /syncer/powershell
 ```
 
+`metadataStorage.owner` / `metadataStorage.repo` default to `GITHUB_REPOSITORY` (the Action repository). `prefix` defaults to `release-sync`. `releaseSelector` currently only supports `latest-draft`.
+
 `targetDirectory` is the remote base directory. The runner appends the current `releaseTagName`, so `/syncer/powertoys` becomes `/syncer/powertoys/v0.90.0` during upload.
 
-## Azure Metadata Paths
+## Draft Release Metadata Paths
+
+Logical storage paths (serialized as `blobPath` in JSON; not Azure Blob paths):
 
 - Release manifests: `<prefix>/<owner>/<repo>/<releaseTagName>/manifest.json`
 - Root index: `<prefix>/index.json`
 
-These JSON documents are written to Azure Blob Storage, not committed back to the repository.
+Because GitHub release assets are a flat file list, each logical path is stored as a single asset name with `/` replaced by `__` (for example `release-sync__index.json`).
+
+These JSON documents are written to the latest draft release assets, not committed back to the repository. A draft release must already exist (for example via release-drafter).
 
 ## Workflow Usage
 
-The repository workflow lives at [release-sync.yml](./.github/workflows/release-sync.yml).
+Dispatch `Release Sync` from the Actions tab:
 
-- Scheduled runs use the built-in `schedule` trigger.
-- Manual runs use `workflow_dispatch` with optional repository, target, and `dry_run` overrides.
-- Matrix jobs are generated from `syncer-action.config.yml`, one repository-target pair per job.
-- Each sync job writes a GitHub Actions summary and a machine-readable JSON result artifact.
-- The summarize job aggregates results, uploads a final summary bundle artifact, and records the workflow conclusion.
-- A separate conclude job fails the workflow after summary/upload complete when the final conclusion is `partial_failure` or `failure`.
-
-Manual run examples:
-
-- Sync every configured repository: leave inputs empty.
-- Sync only one repository: set `repositories` to `openai/codex`.
-- Sync one repository-target pair: set `repositories` to `openai/codex` and `targets` to `123pan`.
-- Validate planning without uploads or Azure writes: set `dry_run` to `true`.
+1. Leave `repositories` empty to sync every repository listed in the config file.
+2. Provide a subset such as `microsoft/PowerToys,PowerShell/PowerShell` when you only want selected repositories.
+3. Set `dry_run=true` to resolve the matrix and plan without uploading to 123Pan or rewriting draft-release metadata.
 
 ## Local Commands
 
 ```bash
-npm ci
+npm install
 npm run plan
-npm run sync -- --matrix-item '{"repositoryKey":"openai/codex","targetName":"123pan"}'
+npm run sync -- --matrix-item '{"repositoryKey":"microsoft/PowerToys","targetName":"123pan"}'
+npm run summarize
 npm test
-npm run typecheck
 ```
 
-## Troubleshooting
+Environment variables for local runs:
 
-- Missing Azure credentials: the config loader fails fast when repositories are configured but neither `AZURE_STORAGE_BLOB_SAS_URL` nor connection-string mode is available.
-- Missing Azure container name: `AZURE_STORAGE_CONTAINER` is required when using `AZURE_STORAGE_CONNECTION_STRING`.
-- No-op runs: expected when the latest release has no eligible assets or all assets already match manifest evidence.
-- Metadata publication drift: if `manifest.json` was written but `index.json` refresh failed, the job reports an explicit metadata publication error with both blob paths.
-- 123Pan target-directory issues: the provider creates missing directories segment by segment; duplicate-name or permission failures are surfaced with structured stage diagnostics.
+- `GITHUB_TOKEN`
+- `NETDISK_123PAN_CLIENT_ID`
+- `NETDISK_123PAN_CLIENT_SECRET`
+- `GITHUB_REPOSITORY` (optional override for metadata storage owner/repo when not set in config)
