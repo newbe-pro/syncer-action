@@ -14,13 +14,13 @@ on:
         required: false
         type: string
       dry_run:
-        description: Resolve the matrix and transfer plan without uploading or updating Azure metadata
+        description: Resolve the matrix and transfer plan without uploading or updating draft-release metadata
         required: false
         type: boolean
         default: false
 
 permissions:
-  contents: read
+  contents: write
   actions: write
 
 concurrency:
@@ -51,9 +51,6 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           NETDISK_123PAN_CLIENT_ID: ${{ secrets.NETDISK_123PAN_CLIENT_ID }}
           NETDISK_123PAN_CLIENT_SECRET: ${{ secrets.NETDISK_123PAN_CLIENT_SECRET }}
-          AZURE_STORAGE_BLOB_SAS_URL: ${{ secrets.AZURE_STORAGE_BLOB_SAS_URL }}
-          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
-          AZURE_STORAGE_CONTAINER: ${{ secrets.AZURE_STORAGE_CONTAINER }}
           SYNCER_ACTION_CONFIG_FILE: syncer-action.config.yml
           SYNCER_ACTION_REPOSITORIES: ${{ inputs.repositories }}
           SYNCER_ACTION_TARGETS: ${{ inputs.targets }}
@@ -87,9 +84,6 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           NETDISK_123PAN_CLIENT_ID: ${{ secrets.NETDISK_123PAN_CLIENT_ID }}
           NETDISK_123PAN_CLIENT_SECRET: ${{ secrets.NETDISK_123PAN_CLIENT_SECRET }}
-          AZURE_STORAGE_BLOB_SAS_URL: ${{ secrets.AZURE_STORAGE_BLOB_SAS_URL }}
-          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
-          AZURE_STORAGE_CONTAINER: ${{ secrets.AZURE_STORAGE_CONTAINER }}
           SYNCER_ACTION_CONFIG_FILE: syncer-action.config.yml
           SYNCER_ACTION_MATRIX_ITEM: ${{ toJson(matrix.item) }}
           SYNCER_ACTION_RESULTS_DIR: .runtime/results
@@ -135,9 +129,6 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           NETDISK_123PAN_CLIENT_ID: ${{ secrets.NETDISK_123PAN_CLIENT_ID }}
           NETDISK_123PAN_CLIENT_SECRET: ${{ secrets.NETDISK_123PAN_CLIENT_SECRET }}
-          AZURE_STORAGE_BLOB_SAS_URL: ${{ secrets.AZURE_STORAGE_BLOB_SAS_URL }}
-          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
-          AZURE_STORAGE_CONTAINER: ${{ secrets.AZURE_STORAGE_CONTAINER }}
           SYNCER_ACTION_CONFIG_FILE: syncer-action.config.yml
           SYNCER_ACTION_RESULTS_DIR: .runtime/results
         run: npm run summarize
