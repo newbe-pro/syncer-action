@@ -53,12 +53,12 @@ repositories:
 
 Logical storage paths (serialized as `blobPath` in JSON; not Azure Blob paths):
 
-- Release manifests: `<prefix>/<owner>/<repo>/<releaseTagName>/manifest.json`
+- Per-software manifests: `<prefix>/<owner>/<repo>/manifest.json` (one file per repository; all release tags share this file)
 - Root index: `<prefix>/index.json`
 
-Because GitHub release assets are a flat file list, each logical path is stored as a single asset name with `/` replaced by `__` (for example `release-sync__index.json`).
+Because GitHub release assets are a flat file list, each logical path is stored as a single asset name with `/` replaced by `__` (for example `release-sync__openai__codex__manifest.json`).
 
-These JSON documents are written to the latest draft release assets, not committed back to the repository. A draft release must already exist (for example via release-drafter).
+These JSON documents are written to the latest draft release assets, not committed back to the repository. A draft release must already exist (for example via release-drafter). Keeping one asset per software avoids exploding the draft release file list as release tags accumulate.
 
 ## Workflow Usage
 
