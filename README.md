@@ -49,6 +49,8 @@ repositories:
 
 `targetDirectory` is the remote base directory. The runner appends the current `releaseTagName`, so `/syncer/powertoys` becomes `/syncer/powertoys/v0.90.0` during upload.
 
+For the 123Pan provider, each successfully synchronized asset creates both the regular share URL and a paid share URL. The paid URL uses a fixed amount of 2 yuan and requires a 123Pan UID in the authenticated token response.
+
 ## Draft Release Metadata Paths
 
 Logical storage paths (serialized as `blobPath` in JSON; not Azure Blob paths):
