@@ -1014,7 +1014,7 @@ export function createPan123Provider(
         etag: request.file.md5,
         size: request.file.byteSize,
         type: classifyUploadType(request.asset.assetName),
-        duplicate: options.duplicate ?? 0,
+        ...(options.duplicate == null ? {} : { duplicate: options.duplicate }),
         containDir: options.containDir ?? false,
       },
       request,

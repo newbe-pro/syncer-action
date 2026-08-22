@@ -252,7 +252,6 @@ describe('createPan123NetdiskProvider', () => {
           etag: 'md5-hash',
           size: 12,
           type: assetName === 'cover.png' ? 1 : 0,
-          duplicate: 0,
           containDir: false,
         },
       })
