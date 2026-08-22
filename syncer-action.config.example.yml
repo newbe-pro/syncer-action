@@ -4,6 +4,7 @@ github:
 assetBlacklistPatterns:
   - "*.yaml"
   - "*.yml"
+  - "*.blockmap"
 
 metadataStorage:
   prefix: release-sync
