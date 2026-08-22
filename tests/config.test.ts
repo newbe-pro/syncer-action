@@ -53,6 +53,7 @@ repositories:
       source: {
         NETDISK_123PAN_CLIENT_ID: 'client-id',
         NETDISK_123PAN_CLIENT_SECRET: 'client-secret',
+        NETDISK_123PAN_UID: '10001',
         GITHUB_TOKEN: 'gh-token',
         GITHUB_REPOSITORY: 'acme/syncer-action',
       },
@@ -85,6 +86,7 @@ repositories:
     expect(config.requiredSecrets).toEqual([
       'NETDISK_123PAN_CLIENT_ID',
       'NETDISK_123PAN_CLIENT_SECRET',
+      'NETDISK_123PAN_UID',
     ])
   })
 
@@ -100,6 +102,7 @@ repositories:
       source: {
         NETDISK_123PAN_CLIENT_ID: 'client-id',
         NETDISK_123PAN_CLIENT_SECRET: 'client-secret',
+        NETDISK_123PAN_UID: '10001',
         GITHUB_TOKEN: 'gh-token',
         GITHUB_REPOSITORY: 'acme/syncer-action',
       },
@@ -129,6 +132,7 @@ repositories:
       source: {
         NETDISK_123PAN_CLIENT_ID: 'client-id',
         NETDISK_123PAN_CLIENT_SECRET: 'client-secret',
+        NETDISK_123PAN_UID: '10001',
         GITHUB_TOKEN: 'gh-token',
         GITHUB_REPOSITORY: 'acme/syncer-action',
       },
@@ -177,6 +181,7 @@ repositories:
       source: {
         NETDISK_123PAN_CLIENT_ID: 'client-id',
         NETDISK_123PAN_CLIENT_SECRET: 'client-secret',
+        NETDISK_123PAN_UID: '10001',
         GITHUB_TOKEN: 'gh-token',
         GITHUB_REPOSITORY: 'acme/syncer-action',
       },

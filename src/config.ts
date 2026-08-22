@@ -58,6 +58,7 @@ export interface SyncerActionConfig {
     pan123: {
       clientId: string
       clientSecret: string
+      uid?: string
       tokenCachePath: string
       apiBaseUrl?: string
       errorDetailLevel: NetdiskErrorDetailLevel
@@ -283,6 +284,7 @@ function validateRequiredSecrets(input: {
   )
   const pan123ClientId = normalizeOptionalString(source.NETDISK_123PAN_CLIENT_ID)
   const pan123ClientSecret = normalizeOptionalString(source.NETDISK_123PAN_CLIENT_SECRET)
+  const pan123Uid = normalizeOptionalString(source.NETDISK_123PAN_UID)
   const pan123TokenCachePath = path.resolve(
     input.rootDirectory,
     normalizeOptionalString(source.NETDISK_123PAN_TOKEN_CACHE_PATH) ?? '.runtime/123pan-access-token.json',
@@ -293,6 +295,7 @@ function validateRequiredSecrets(input: {
     const missing = [
       !pan123ClientId ? 'NETDISK_123PAN_CLIENT_ID' : null,
       !pan123ClientSecret ? 'NETDISK_123PAN_CLIENT_SECRET' : null,
+      !pan123Uid ? 'NETDISK_123PAN_UID' : null,
     ]
       .filter(Boolean)
       .join(', ')
@@ -300,7 +303,11 @@ function validateRequiredSecrets(input: {
   }
 
   if (needsPan123) {
-    requiredSecrets.push('NETDISK_123PAN_CLIENT_ID', 'NETDISK_123PAN_CLIENT_SECRET')
+    requiredSecrets.push(
+      'NETDISK_123PAN_CLIENT_ID',
+      'NETDISK_123PAN_CLIENT_SECRET',
+      'NETDISK_123PAN_UID',
+    )
   }
 
   if (hasRepositories && !githubToken) {
@@ -347,6 +354,7 @@ function validateRequiredSecrets(input: {
         pan123: {
           clientId: pan123ClientId ?? '',
           clientSecret: pan123ClientSecret ?? '',
+          uid: pan123Uid ?? '',
           tokenCachePath: pan123TokenCachePath,
           apiBaseUrl: input.pan123ApiBaseUrl,
           errorDetailLevel: input.pan123ErrorDetailLevel,
