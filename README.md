@@ -28,6 +28,9 @@ metadataStorage:
 concurrency:
   workflowMaxParallel: 2
   maxParallelAssets: 2
+assetBlacklistPatterns:
+  - "*.yaml"
+  - "*.yml"
 repositories:
   - owner: microsoft
     repo: PowerToys
@@ -45,6 +48,10 @@ repositories:
         provider: 123pan
         targetDirectory: /syncer/powershell
 ```
+
+`assetBlacklistPatterns` is always seeded with `*.yaml` and `*.yml` and may
+contain additional case-insensitive filename glob patterns. Matching assets are
+reported as `skipped` before download, upload, or share processing.
 
 `metadataStorage.owner` / `metadataStorage.repo` default to `GITHUB_REPOSITORY` (the Action repository). `prefix` defaults to `release-sync`. `releaseSelector` currently only supports `latest-draft`.
 
