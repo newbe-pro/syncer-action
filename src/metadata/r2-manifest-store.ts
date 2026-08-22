@@ -36,9 +36,10 @@ function sign(method: string, url: URL, body: string, key: string, secret: strin
   const hmac = (k: string | Buffer, v: string) => createHmac('sha256', k).update(v).digest()
   const date = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
   const stamp = date.slice(0, 8), scope = `${stamp}/auto/s3/aws4_request`, payload = hash(body)
-  const headers = `host:${url.host}\nx-amz-content-sha256:${payload}\nx-amz-date:${date}\n`
-  const signed = 'host;x-amz-content-sha256;x-amz-date'
-  const canonical = [method, url.pathname, url.search.slice(1), headers, signed, payload].join('\n')
+  const canonicalUri = url.pathname.split('/').map((segment) => encodeURIComponent(decodeURIComponent(segment))).join('/')
+  const headers = `content-type:application/json\nhost:${url.host}\nx-amz-content-sha256:${payload}\nx-amz-date:${date}\n`
+  const signed = 'content-type;host;x-amz-content-sha256;x-amz-date'
+  const canonical = [method, canonicalUri, url.search.slice(1), headers, signed, payload].join('\n')
   const signingKey = hmac(hmac(hmac(`AWS4${secret}`, stamp), 'auto'), 's3')
   const stringToSign = `AWS4-HMAC-SHA256\n${date}\n${scope}\n${hash(canonical)}`
   return {
