@@ -5,6 +5,7 @@ import {
 } from './asset-blacklist'
 import { type GitHubReleaseSource } from './github-release-source'
 import {
+  NetdiskProviderError,
   assertValidNetdiskUploadReceipt,
   normalizeNetdiskUploadError,
   type NetdiskProvider,
@@ -165,6 +166,14 @@ function upsertManifestRecord(manifest: ReleaseSyncManifest, nextRecord: Release
   }
 }
 
+function isAlreadySyncedOnNetdisk(record: ReleaseSyncRecord | undefined) {
+  return (
+    record?.status === 'synced' &&
+    Boolean(record.remoteFileId) &&
+    Boolean(record.shareUrl)
+  )
+}
+
 function shouldSkipWithoutDownload(
   existingRecord: ReleaseSyncRecord | undefined,
   asset: GitHubReleaseAsset,
@@ -173,7 +182,7 @@ function shouldSkipWithoutDownload(
     existingRecord?.status === 'synced' &&
     existingRecord.assetUpdatedAt === asset.assetUpdatedAt &&
     existingRecord.assetSize === asset.assetSize &&
-    Boolean(existingRecord.sha256)
+    isAlreadySyncedOnNetdisk(existingRecord)
   )
 }
 
@@ -504,7 +513,11 @@ export function createReleaseSyncRunner(options: {
 
           if (shouldSkipWithoutDownload(existingRecord, asset)) {
             logger.info?.(
-              `[release-sync] Skipping ${asset.assetName}: metadata shows unchanged content (sha256 present).`,
+              `[release-sync] Skipping ${asset.assetName}: ${
+                isAlreadySyncedOnNetdisk(existingRecord)
+                  ? 'metadata shows unchanged content (remote identity present).'
+                  : 'digest matches the existing manifest.'
+              }`,
             )
             addOutcome(
               repositorySummary,
@@ -566,7 +579,11 @@ export function createReleaseSyncRunner(options: {
                 `[release-sync] Downloaded ${asset.assetName}: ${formatBytes(file.byteSize)}, sha256=${file.sha256}.`,
               )
 
-              if (existingRecord?.status === 'synced' && existingRecord.sha256 === file.sha256) {
+              if (
+                existingRecord &&
+                isAlreadySyncedOnNetdisk(existingRecord) &&
+                existingRecord.sha256 === file.sha256
+              ) {
                 logger.info?.(
                   `[release-sync] Skipping ${asset.assetName}: local digest matches the existing manifest.`,
                 )
@@ -740,6 +757,46 @@ export function createReleaseSyncRunner(options: {
           const result = resultByAssetId.get(asset.assetId)
           if (result) {
             addOutcome(repositorySummary, failures, result.outcome)
+          }
+        }
+
+        if (
+          !options.dryRun &&
+          options.provider.cleanupVersions &&
+          repositorySummary.failedCount === 0 &&
+          repositoryAssets.length > 0
+        ) {
+          const cleanupAsset = repositoryAssets[0]!
+          try {
+            repositorySummary.cleanup = await options.provider.cleanupVersions({
+              repositoryKey: repository.key,
+              targetDirectory: repository.targetDirectory,
+              asset: cleanupAsset,
+              signal,
+            })
+            logger.info?.(
+              `[release-sync] Cleanup completed for ${repository.key}: ${repositorySummary.cleanup.deletedVersionCount} deleted, ${repositorySummary.cleanup.retainedVersionCount} retained.`,
+            )
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unknown cleanup error.'
+            const diagnostics =
+              error instanceof NetdiskProviderError ? error.diagnostics ?? null : null
+            repositorySummary.failedCount += 1
+            failures.push({
+              repositoryKey: repository.key,
+              releaseId: cleanupAsset.releaseId,
+              assetId: cleanupAsset.assetId,
+              assetName: `${cleanupAsset.releaseTagName} cleanup`,
+              providerName: options.provider.providerName,
+              failureStage: 'cleanup',
+              message,
+              occurredAt: now().toISOString(),
+              diagnostics,
+            })
+            logger.error?.(
+              `[release-sync] Cleanup failed for ${repository.key}: ${message}` +
+                formatDiagnosticsForLog(diagnostics),
+            )
           }
         }
 

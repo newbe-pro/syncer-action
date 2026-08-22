@@ -3,6 +3,7 @@ export type NetdiskFailureStage =
   | 'directory'
   | 'upload'
   | 'share'
+  | 'cleanup'
   | 'configuration'
   | 'unknown'
 
@@ -107,6 +108,21 @@ export interface NetdiskUploadRequest {
   file: LocalFileMetadata
   destination: NetdiskUploadDestination
   signal?: AbortSignal
+}
+
+export interface NetdiskCleanupRequest {
+  repositoryKey: string
+  targetDirectory?: string
+  asset: GitHubReleaseAsset
+  signal?: AbortSignal
+}
+
+export interface NetdiskCleanupResult {
+  providerName: string
+  repositoryKey: string
+  retainedVersionCount: number
+  deletedVersionCount: number
+  noOp: boolean
 }
 
 export interface NetdiskUploadReceipt {
@@ -234,6 +250,7 @@ export interface ReleaseSyncRepositorySummary {
   skippedCount: number
   failedCount: number
   outcomes: ReleaseSyncAssetOutcome[]
+  cleanup?: NetdiskCleanupResult
 }
 
 export interface ReleaseSyncRunFailure {

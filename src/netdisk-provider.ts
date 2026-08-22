@@ -5,6 +5,8 @@ import {
   type NetdiskUploadFailure,
   type NetdiskUploadReceipt,
   type NetdiskUploadRequest,
+  type NetdiskCleanupRequest,
+  type NetdiskCleanupResult,
 } from './release-sync-contracts'
 
 const maxRecentRetryLogs = 3
@@ -12,6 +14,7 @@ const maxRecentRetryLogs = 3
 export interface NetdiskProvider {
   providerName: string
   uploadAsset(request: NetdiskUploadRequest): Promise<NetdiskUploadReceipt>
+  cleanupVersions?(request: NetdiskCleanupRequest): Promise<NetdiskCleanupResult>
 }
 
 function formatNetdiskUploadFailureMessage(

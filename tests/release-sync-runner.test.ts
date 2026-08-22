@@ -138,6 +138,33 @@ function createManifestForRepository(
   }
 }
 
+function createManifestRecord(
+  overrides: Partial<ReleaseSyncRecord> = {},
+): ReleaseSyncRecord {
+  return {
+    repositoryKey: baseAsset.repositoryKey,
+    releaseId: baseAsset.releaseId,
+    releaseTagName: baseAsset.releaseTagName,
+    assetId: baseAsset.assetId,
+    assetName: baseAsset.assetName,
+    assetSize: baseAsset.assetSize,
+    assetUpdatedAt: baseAsset.assetUpdatedAt,
+    sourceDownloadUrl: baseAsset.browserDownloadUrl,
+    sha256: null,
+    providerName: '123pan',
+    remoteFileId: 'remote-asset-1',
+    shareUrl: 'https://123pan.example/share/remote-asset-1',
+    status: 'synced',
+    firstSyncedAt: '2026-04-09T10:00:00.000Z',
+    lastSyncedAt: '2026-04-09T10:00:00.000Z',
+    lastAttemptedAt: '2026-04-09T10:00:00.000Z',
+    failureStage: null,
+    failureMessage: null,
+    failureDiagnostics: null,
+    ...overrides,
+  }
+}
+
 describe('createReleaseSyncRunner', () => {
   it('syncs latest-release assets and persists versioned receipts', async () => {
     let persistedManifest = createManifest()
@@ -271,6 +298,151 @@ describe('createReleaseSyncRunner', () => {
     )
     expect(source.downloadAsset).not.toHaveBeenCalled()
     expect(metadataStore.saveManifest).not.toHaveBeenCalled()
+  })
+
+  it('reuses synced remote identity when the manifest digest is missing', async () => {
+    const metadataStore = {
+      loadManifest: vi.fn(async () =>
+        createManifest([createManifestRecord()]),
+      ),
+      loadManifestIndex: vi.fn(),
+      saveManifest: vi.fn(),
+    }
+    const source = {
+      targets: [targetRepository],
+      listReleaseAssets: vi.fn(async () => [baseAsset]),
+      downloadAsset: vi.fn(),
+    }
+    const provider = {
+      providerName: '123pan',
+      uploadAsset: vi.fn(),
+    }
+
+    const summary = await createReleaseSyncRunner({
+      source,
+      provider,
+      metadataStore,
+    }).run()
+
+    expect(summary.repositories[0]?.outcomes[0]).toMatchObject({
+      assetName: baseAsset.assetName,
+      status: 'skipped',
+    })
+    expect(source.downloadAsset).not.toHaveBeenCalled()
+    expect(provider.uploadAsset).not.toHaveBeenCalled()
+  })
+
+  it('transfers an asset when its metadata changed and the manifest digest is missing', async () => {
+    const metadataStore = {
+      loadManifest: vi.fn(async () =>
+        createManifest([
+          createManifestRecord({
+            assetUpdatedAt: '2026-04-09T09:00:00.000Z',
+          }),
+        ]),
+      ),
+      loadManifestIndex: vi.fn(),
+      saveManifest: vi.fn(async (manifest: ReleaseSyncManifest) => manifest),
+    }
+    const source = {
+      targets: [targetRepository],
+      listReleaseAssets: vi.fn(async () => [baseAsset]),
+      downloadAsset: vi.fn(async () => createDownloadedAsset(baseAsset)),
+    }
+    const provider = {
+      providerName: '123pan',
+      uploadAsset: vi.fn(async () => ({
+        providerName: '123pan',
+        remoteFileId: 'new-remote-asset',
+        shareUrl: 'https://123pan.example/share/new-remote-asset',
+        uploadedAt: '2026-04-09T10:00:00.000Z',
+      })),
+    }
+
+    const summary = await createReleaseSyncRunner({
+      source,
+      provider,
+      metadataStore,
+    }).run()
+
+    expect(summary.syncedCount).toBe(1)
+    expect(source.downloadAsset).toHaveBeenCalledTimes(1)
+    expect(provider.uploadAsset).toHaveBeenCalledTimes(1)
+  })
+
+  it('transfers a synced asset when its remote identity is incomplete', async () => {
+    const metadataStore = {
+      loadManifest: vi.fn(async () =>
+        createManifest([
+          createManifestRecord({
+            sha256: 'existing-sha',
+            remoteFileId: null,
+          }),
+        ]),
+      ),
+      loadManifestIndex: vi.fn(),
+      saveManifest: vi.fn(async (manifest: ReleaseSyncManifest) => manifest),
+    }
+    const source = {
+      targets: [targetRepository],
+      listReleaseAssets: vi.fn(async () => [baseAsset]),
+      downloadAsset: vi.fn(async () => createDownloadedAsset(baseAsset)),
+    }
+    const provider = {
+      providerName: '123pan',
+      uploadAsset: vi.fn(async () => ({
+        providerName: '123pan',
+        remoteFileId: 'recovered-remote-asset',
+        shareUrl: 'https://123pan.example/share/recovered-remote-asset',
+        uploadedAt: '2026-04-09T10:00:00.000Z',
+      })),
+    }
+
+    await createReleaseSyncRunner({
+      source,
+      provider,
+      metadataStore,
+    }).run()
+
+    expect(source.downloadAsset).toHaveBeenCalledTimes(1)
+    expect(provider.uploadAsset).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries upload-failed records even when remote identity is present', async () => {
+    const metadataStore = {
+      loadManifest: vi.fn(async () =>
+        createManifest([
+          createManifestRecord({
+            status: 'upload_failed',
+          }),
+        ]),
+      ),
+      loadManifestIndex: vi.fn(),
+      saveManifest: vi.fn(async (manifest: ReleaseSyncManifest) => manifest),
+    }
+    const source = {
+      targets: [targetRepository],
+      listReleaseAssets: vi.fn(async () => [baseAsset]),
+      downloadAsset: vi.fn(async () => createDownloadedAsset(baseAsset)),
+    }
+    const provider = {
+      providerName: '123pan',
+      uploadAsset: vi.fn(async () => ({
+        providerName: '123pan',
+        remoteFileId: 'retried-remote-asset',
+        shareUrl: 'https://123pan.example/share/retried-remote-asset',
+        uploadedAt: '2026-04-09T10:00:00.000Z',
+      })),
+    }
+
+    await createReleaseSyncRunner({
+      source,
+      provider,
+      metadataStore,
+    }).run()
+
+    expect(source.downloadAsset).toHaveBeenCalledTimes(1)
+    expect(provider.uploadAsset).toHaveBeenCalledTimes(1)
   })
 
   it('ignores non-latest assets without polluting current-run counts or outcomes', async () => {

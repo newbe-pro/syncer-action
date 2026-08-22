@@ -15,6 +15,8 @@ import {
   type NetdiskFailureResponseDiagnostics,
   type NetdiskFailureTransportDiagnostics,
   type NetdiskUploadRequest,
+  type NetdiskCleanupRequest,
+  type NetdiskCleanupResult,
 } from '../release-sync-contracts'
 
 const providerName = '123pan'
@@ -125,6 +127,7 @@ interface Pan123RemoteFile {
   downloadURL?: string
   userSelfURL?: string
   parentFileId?: Pan123FileId
+  trashed?: number
 }
 
 export interface Pan123ProviderOptions {
@@ -566,12 +569,13 @@ export function createPan123Provider(
     pathname: string,
     body: Record<string, unknown>,
     request: NetdiskUploadRequest,
-    stage: 'auth' | 'directory' | 'upload' | 'share',
+    stage: 'auth' | 'directory' | 'upload' | 'share' | 'cleanup',
     token?: string,
     method: 'GET' | 'POST' = 'POST',
     retry?: NetdiskFailureDiagnostics['retry'],
     uploadLogContext?: Pan123UploadLogContext,
     baseUrl = apiBaseUrl,
+    allowNullData = false,
   ) {
     let response: Response
     const url = new URL(`${baseUrl}${pathname}`)
@@ -663,7 +667,12 @@ export function createPan123Provider(
       })
     }
 
-    if (!response.ok || payload.code !== 0 || payload.data == null) {
+    if (
+      !response.ok ||
+      payload.code !== 0 ||
+      (!allowNullData && payload.data == null) ||
+      (allowNullData && payload.data !== null)
+    ) {
       const message =
         payload.message || `123Pan API returned ${response.status} ${response.statusText}.`
       if (stage === 'upload' && uploadLogContext) {
@@ -694,7 +703,7 @@ export function createPan123Provider(
       })
     }
 
-    return payload.data
+    return payload.data as T
   }
 
   async function readCachedToken() {
@@ -1437,8 +1446,107 @@ export function createPan123Provider(
     }
   }
 
+  function compareVersionRecords(left: Pan123RemoteFile, right: Pan123RemoteFile) {
+    const recency = (value: string | undefined) => {
+      const parsed = value ? Date.parse(value) : Number.NaN
+      return Number.isFinite(parsed) ? parsed : -Infinity
+    }
+    for (const [leftValue, rightValue] of [
+      [left.updateAt, right.updateAt],
+      [left.createAt, right.createAt],
+    ] as const) {
+      const difference = recency(rightValue) - recency(leftValue)
+      if (difference !== 0) return difference
+    }
+
+    const filenameDifference = left.filename.localeCompare(right.filename, undefined, {
+      numeric: true,
+    })
+    if (filenameDifference !== 0) return -filenameDifference
+    return String(right.fileId).localeCompare(String(left.fileId), undefined, {
+      numeric: true,
+    })
+  }
+
+  async function cleanupVersions(
+    request: NetdiskCleanupRequest,
+  ): Promise<NetdiskCleanupResult> {
+    const token = await getAccessToken({
+      asset: request.asset,
+      file: { filePath: '', byteSize: 0, sha256: '', md5: '' },
+      destination: {
+        repositoryKey: request.repositoryKey,
+        targetDirectory: request.targetDirectory,
+      },
+      signal: request.signal,
+    })
+    const parentDirectoryId = await ensureDirectory(
+      token,
+      {
+        asset: request.asset,
+        file: { filePath: '', byteSize: 0, sha256: '', md5: '' },
+        destination: {
+          repositoryKey: request.repositoryKey,
+          targetDirectory: request.targetDirectory,
+        },
+        signal: request.signal,
+      },
+      normalizeTargetDirectory(request.targetDirectory),
+    )
+    const versions = (await listDirectory(token, {
+      asset: request.asset,
+      file: { filePath: '', byteSize: 0, sha256: '', md5: '' },
+      destination: { repositoryKey: request.repositoryKey },
+      signal: request.signal,
+    }, parentDirectoryId)).filter(
+      (entry) => entry.type === 1 && entry.trashed !== 1,
+    )
+    versions.sort(compareVersionRecords)
+    const obsolete = versions.slice(10)
+    if (obsolete.length === 0) {
+      return {
+        providerName,
+        repositoryKey: request.repositoryKey,
+        retainedVersionCount: versions.length,
+        deletedVersionCount: 0,
+        noOp: true,
+      }
+    }
+
+    for (let offset = 0; offset < obsolete.length; offset += 100) {
+      const batch = obsolete.slice(offset, offset + 100)
+      const cleanupRequest = {
+        asset: request.asset,
+        file: { filePath: '', byteSize: 0, sha256: '', md5: '' },
+        destination: { repositoryKey: request.repositoryKey },
+        signal: request.signal,
+      } satisfies NetdiskUploadRequest
+      await requestJson<null>(
+        '/api/v1/file/trash',
+        { fileIDs: batch.map((entry) => String(entry.fileId)) },
+        cleanupRequest,
+        'cleanup',
+        token,
+        'POST',
+        undefined,
+        undefined,
+        apiBaseUrl,
+        true,
+      )
+    }
+
+    return {
+      providerName,
+      repositoryKey: request.repositoryKey,
+      retainedVersionCount: versions.length - obsolete.length,
+      deletedVersionCount: obsolete.length,
+      noOp: false,
+    }
+  }
+
   return {
     providerName,
+    cleanupVersions,
     async uploadAsset(request) {
       validateUploadMetadata(request)
       const targetDirectory = normalizeTargetDirectory(

@@ -119,6 +119,14 @@ export function renderJobSummaryMarkdown(result: ReleaseSyncJobResult) {
     )
   }
 
+  for (const repository of summary.repositories) {
+    if (repository.cleanup) {
+      lines.push(
+        `- Version cleanup: ${repository.cleanup.deletedVersionCount} deleted, ${repository.cleanup.retainedVersionCount} retained`,
+      )
+    }
+  }
+
   if (summary.failures.length > 0) {
     lines.push('', '### Failures')
     for (const failure of summary.failures.slice(0, 10)) {
