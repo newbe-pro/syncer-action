@@ -45,6 +45,7 @@ interface Pan123ApiResponse<T> {
 interface Pan123AccessTokenPayload {
   accessToken: string
   expiredAt: string
+  uid?: string | number
 }
 
 interface Pan123TokenCachePayload extends Pan123AccessTokenPayload {
@@ -82,6 +83,11 @@ interface Pan123UploadAsyncResultResponse {
 }
 
 interface Pan123CreateShareResponse {
+  shareID?: number
+  shareKey?: string
+}
+
+interface Pan123CreatePaidShareResponse {
   shareID?: number
   shareKey?: string
 }
@@ -140,6 +146,21 @@ function normalizeTargetDirectory(value: string | undefined) {
     .filter(Boolean)
 
   return parts.length === 0 ? '/' : `/${parts.join('/')}`
+}
+
+function normalizeShareName(value: string) {
+  const normalized = value
+    .replace(/[^a-zA-Z0-9._ -]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 34)
+
+  return normalized
+}
+
+function isValidShareFileIdList(fileIDList: string) {
+  const fileIds = fileIDList.split(',').map((fileId) => fileId.trim()).filter(Boolean)
+  return fileIds.length > 0 && fileIds.length <= 100
 }
 
 async function defaultSleep(milliseconds: number) {
@@ -378,6 +399,7 @@ export function createPan123Provider(
 ): NetdiskProvider {
   const apiBaseUrl = normalizeApiBaseUrl(options.apiBaseUrl)
   const errorDetailLevel = options.errorDetailLevel ?? 'diagnostic'
+  const tokenUids = new Map<string, string>()
   const fetcher = options.fetch ?? fetch
   const now = options.now ?? (() => new Date())
   const sleep = options.sleep ?? defaultSleep
@@ -613,6 +635,7 @@ export function createPan123Provider(
           providerName,
           accessToken: payload.accessToken,
           expiredAt: payload.expiredAt,
+          ...(payload.uid != null ? { uid: String(payload.uid) } : {}),
           updatedAt: now().toISOString(),
         } satisfies Pan123TokenCachePayload,
         null,
@@ -624,6 +647,9 @@ export function createPan123Provider(
   async function getAccessToken(request: NetdiskUploadRequest) {
     const cachedToken = await readCachedToken()
     if (cachedToken && isTokenStillValid(cachedToken, now())) {
+      if (cachedToken.uid != null) {
+        tokenUids.set(cachedToken.accessToken, String(cachedToken.uid))
+      }
       return cachedToken.accessToken
     }
 
@@ -638,7 +664,29 @@ export function createPan123Provider(
     )
 
     await writeCachedToken(payload)
+    if (payload.uid != null) {
+      tokenUids.set(payload.accessToken, String(payload.uid))
+    }
     return payload.accessToken
+  }
+
+  async function getAccessTokenUid(token: string, request: NetdiskUploadRequest) {
+    const uid = tokenUids.get(token)
+    if (!uid) {
+      throw createNetdiskProviderError({
+        providerName,
+        stage: 'share',
+        asset: request.asset,
+        error: '123Pan authentication response did not include a UID for paid sharing.',
+        diagnostics: buildDiagnostics({
+          detailLevel: errorDetailLevel,
+          url: new URL(`${apiBaseUrl}/api/v1/share/content-payment/create`),
+          method: 'POST',
+        }),
+      })
+    }
+
+    return uid
   }
 
   async function listDirectory(
@@ -962,15 +1010,77 @@ export function createPan123Provider(
     })
   }
 
-  async function createShareUrl(
+  async function createPaidShareUrl(
+    token: string,
+    request: NetdiskUploadRequest,
+    remoteFileId: string,
+    shareName: string,
+  ) {
+    if (!isValidShareFileIdList(remoteFileId)) {
+      throw createNetdiskProviderError({
+        providerName,
+        stage: 'share',
+        asset: request.asset,
+        error: '123Pan share file ID list must contain between 1 and 100 IDs.',
+      })
+    }
+    const uid = await getAccessTokenUid(token, request)
+    const paidShare = await requestJson<Pan123CreatePaidShareResponse>(
+      '/api/v1/share/content-payment/create',
+      {
+        shareName,
+        fileIDList: remoteFileId,
+        payAmount: 2,
+      },
+      request,
+      'share',
+      token,
+    )
+
+    if (!paidShare.shareID || !paidShare.shareKey) {
+      throw createNetdiskProviderError({
+        providerName,
+        stage: 'share',
+        asset: request.asset,
+        error: '123Pan did not return shareID and shareKey for the paid share link.',
+        diagnostics: buildDiagnostics({
+          detailLevel: errorDetailLevel,
+          url: new URL(`${apiBaseUrl}/api/v1/share/content-payment/create`),
+          method: 'POST',
+        }),
+      })
+    }
+
+    return `https://${uid}.share.123pan.cn/123pan/${paidShare.shareKey}`
+  }
+
+  async function createShareUrls(
     token: string,
     request: NetdiskUploadRequest,
     remoteFileId: string,
   ) {
+    const shareName = normalizeShareName(request.asset.assetName)
+    if (!shareName) {
+      throw createNetdiskProviderError({
+        providerName,
+        stage: 'share',
+        asset: request.asset,
+        error: '123Pan could not derive a valid share name from the asset name.',
+      })
+    }
+    if (!isValidShareFileIdList(remoteFileId)) {
+      throw createNetdiskProviderError({
+        providerName,
+        stage: 'share',
+        asset: request.asset,
+        error: '123Pan share file ID list must contain between 1 and 100 IDs.',
+      })
+    }
+
     const createdShare = await requestJson<Pan123CreateShareResponse>(
       '/api/v1/share/create',
       {
-        shareName: request.asset.assetName,
+        shareName,
         shareExpire: permanentShareExpireDays,
         fileIDList: remoteFileId,
       },
@@ -979,12 +1089,12 @@ export function createPan123Provider(
       token,
     )
 
-    if (!createdShare.shareKey) {
+    if (!createdShare.shareID || !createdShare.shareKey) {
       throw createNetdiskProviderError({
         providerName,
         stage: 'share',
         asset: request.asset,
-        error: '123Pan did not return a shareKey for the created share link.',
+        error: '123Pan did not return shareID and shareKey for the created share link.',
         diagnostics: buildDiagnostics({
           detailLevel: errorDetailLevel,
           url: new URL(`${apiBaseUrl}/api/v1/share/create`),
@@ -993,7 +1103,10 @@ export function createPan123Provider(
       })
     }
 
-    return `${defaultShareBaseUrl}${createdShare.shareKey}`
+    return {
+      shareUrl: `${defaultShareBaseUrl}${createdShare.shareKey}`,
+      paidShareUrl: await createPaidShareUrl(token, request, remoteFileId, shareName),
+    }
   }
 
   async function findExistingShareUrl(token: string, request: NetdiskUploadRequest) {
@@ -1059,14 +1172,23 @@ export function createPan123Provider(
     }
 
     const remoteFileId = String(existingFile.fileId)
-    const shareUrl =
-      (await findExistingShareUrl(token, request)) ??
-      (await createShareUrl(token, request, remoteFileId))
+    const existingShareUrl = await findExistingShareUrl(token, request)
+    const shareUrls = existingShareUrl
+      ? {
+          shareUrl: existingShareUrl,
+          paidShareUrl: await createPaidShareUrl(
+            token,
+            request,
+            remoteFileId,
+            normalizeShareName(request.asset.assetName),
+          ),
+        }
+      : await createShareUrls(token, request, remoteFileId)
 
     return {
       providerName,
       remoteFileId,
-      shareUrl,
+      ...shareUrls,
       uploadedAt: now().toISOString(),
     }
   }
@@ -1097,12 +1219,12 @@ export function createPan123Provider(
         return resolveDuplicateFileUpload(token, request, parentDirectoryId, error)
       }
 
-      const shareUrl = await createShareUrl(token, request, remoteFileId)
+      const shareUrls = await createShareUrls(token, request, remoteFileId)
 
       return {
         providerName,
         remoteFileId,
-        shareUrl,
+        ...shareUrls,
         uploadedAt: now().toISOString(),
       }
     },

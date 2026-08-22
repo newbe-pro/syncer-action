@@ -214,6 +214,7 @@ function createRecordFromAttempt(input: {
   providerName: string | null
   remoteFileId: string | null
   shareUrl: string | null
+  paidShareUrl?: string | null
   status: ReleaseSyncRecord['status']
   attemptedAt: string
   failureStage: NetdiskFailureStage | null
@@ -239,6 +240,7 @@ function createRecordFromAttempt(input: {
     providerName: input.providerName,
     remoteFileId: input.remoteFileId,
     shareUrl: input.shareUrl,
+    paidShareUrl: input.paidShareUrl ?? null,
     status: input.status,
     firstSyncedAt:
       input.status === 'synced'
@@ -259,6 +261,7 @@ function createAssetOutcome(input: {
   sha256: string | null
   providerName: string | null
   shareUrl: string | null
+  paidShareUrl?: string | null
   failureStage: NetdiskFailureStage | null
   failureOccurredAt?: string | null
   failureDiagnostics?: NetdiskFailureDiagnostics | null
@@ -273,6 +276,7 @@ function createAssetOutcome(input: {
     sha256: input.sha256,
     providerName: input.providerName,
     shareUrl: input.shareUrl,
+    paidShareUrl: input.paidShareUrl ?? null,
     failureStage: input.failureStage,
     failureOccurredAt: input.failureOccurredAt ?? null,
     failureDiagnostics: input.failureDiagnostics ?? null,
@@ -626,6 +630,7 @@ export function createReleaseSyncRunner(options: {
                     sha256: file.sha256,
                     providerName: receipt.providerName,
                     shareUrl: receipt.shareUrl,
+                    paidShareUrl: receipt.paidShareUrl,
                     failureStage: null,
                   }),
                   record: createRecordFromAttempt({
@@ -635,6 +640,7 @@ export function createReleaseSyncRunner(options: {
                     providerName: receipt.providerName,
                     remoteFileId: receipt.remoteFileId,
                     shareUrl: receipt.shareUrl,
+                    paidShareUrl: receipt.paidShareUrl,
                     status: 'synced',
                     attemptedAt: receipt.uploadedAt,
                     failureStage: null,

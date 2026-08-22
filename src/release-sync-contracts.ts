@@ -113,6 +113,7 @@ export interface NetdiskUploadReceipt {
   providerName: string
   remoteFileId: string
   shareUrl: string
+  paidShareUrl?: string
   uploadedAt: string
 }
 
@@ -143,6 +144,7 @@ export interface ReleaseSyncRecord {
   providerName: string | null
   remoteFileId: string | null
   shareUrl: string | null
+  paidShareUrl?: string | null
   status: ReleaseSyncRecordStatus
   firstSyncedAt: string | null
   lastSyncedAt: string | null
@@ -218,6 +220,7 @@ export interface ReleaseSyncAssetOutcome {
   sha256: string | null
   providerName: string | null
   shareUrl: string | null
+  paidShareUrl?: string | null
   failureStage: NetdiskFailureStage | null
   failureOccurredAt?: string | null
   failureDiagnostics?: NetdiskFailureDiagnostics | null
