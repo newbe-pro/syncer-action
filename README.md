@@ -8,6 +8,7 @@
 
 - `NETDISK_123PAN_CLIENT_ID`
 - `NETDISK_123PAN_CLIENT_SECRET`
+- `NETDISK_123PAN_UID`
 
 GitHub:
 
@@ -49,7 +50,7 @@ repositories:
 
 `targetDirectory` is the remote base directory. The runner appends the current `releaseTagName`, so `/syncer/powertoys` becomes `/syncer/powertoys/v0.90.0` during upload.
 
-For the 123Pan provider, each successfully synchronized asset creates both the regular share URL and a paid share URL. The paid URL uses a fixed amount of 2 yuan and requires a 123Pan UID in the authenticated token response.
+For the 123Pan provider, each successfully synchronized asset creates both the regular share URL and a paid share URL. The paid URL uses a fixed amount of 2 yuan and requires the `NETDISK_123PAN_UID` secret to build the official URL format.
 
 Uploads use the 123Pan v2 create/slice/complete API. Requests include the
 `Platform: open_platform` header and bearer authorization. The provider
