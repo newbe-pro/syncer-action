@@ -57,6 +57,11 @@ reported as `skipped` before download, upload, or share processing.
 
 `targetDirectory` is the remote base directory. The runner appends the current `releaseTagName`, so `/syncer/powertoys` becomes `/syncer/powertoys/v0.90.0` during upload.
 
+For upload deduplication, the runner reuses a manifest record when its status is
+`synced`, its asset metadata is unchanged, and it has both a `remoteFileId` and
+`shareUrl` for the 123Pan file. A missing `sha256` no longer causes an already
+synchronized asset to be uploaded again.
+
 For the 123Pan provider, each successfully synchronized asset creates both the regular share URL and a paid share URL. The paid URL uses a fixed amount of 2 yuan and requires the `NETDISK_123PAN_UID` secret to build the official URL format.
 
 Uploads use the 123Pan v2 create/slice/complete API. Requests include the
@@ -65,6 +70,13 @@ validates names (under 255 characters and without `"\\/:*?|><`) and rejects
 files larger than 10 GiB. Set `providers.pan123.singleStepUpload: true` for
 the v2 multipart single-step endpoint; otherwise uploads use serial MD5
 slices and completion polling.
+
+After all eligible assets for a software finish uploading, the provider lists
+its version directories and retains the ten newest by update time, creation
+time, version name, and remote ID. Older directories are moved to the
+123Pan recycle bin in batches of at most 100 IDs. Cleanup failures are
+reported as a `cleanup` stage failure; uploads are never cleaned while they
+are still in progress.
 
 ## Draft Release Metadata Paths
 
