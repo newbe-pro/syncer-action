@@ -478,6 +478,69 @@ describe('createPan123NetdiskProvider', () => {
     })
   })
 
+  it('uses the configured UID when auth response omits it', async () => {
+    const request = await createUploadRequest()
+    const directory = await createTempDirectory()
+    const provider = createPan123NetdiskProvider({
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      uid: '10001',
+      tokenCachePath: path.join(directory, 'token-cache.json'),
+      fetch: async (input, init) => {
+        const url = typeof input === 'string' ? input : input.toString()
+
+        if (url.endsWith('/api/v1/access_token')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { accessToken: 'token-1', expiredAt: '2026-04-10T01:00:00.000Z' },
+          })
+        }
+        if (url.includes('/api/v2/file/list')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { lastFileId: '-1', fileList: [{ fileId: '123', filename: 'ollama', type: 1 }] },
+          })
+        }
+        if (url.endsWith('/upload/v1/file/mkdir')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { list: [{ filename: 'ollama', dirID: '123' }] },
+          })
+        }
+        if (url.endsWith('/upload/v2/file/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { reuse: true, fileID: 'remote-file-1' },
+          })
+        }
+        if (url.endsWith('/api/v1/share/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { shareID: 1, shareKey: 'share-key' },
+          })
+        }
+        if (url.endsWith('/api/v1/share/content-payment/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { shareID: 2, shareKey: 'paid-key' },
+          })
+        }
+
+        throw new Error(`Unexpected request: ${url} ${init?.method ?? 'GET'}`)
+      },
+    })
+
+    await expect(provider.uploadAsset(request)).resolves.toMatchObject({
+      paidShareUrl: 'https://10001.share.123pan.cn/123pan/paid-key',
+    })
+  })
+
   it('resolves versioned target directories into a release-tag subdirectory', async () => {
     const request = await createUploadRequest()
     const directory = await createTempDirectory()

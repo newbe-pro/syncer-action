@@ -130,6 +130,7 @@ interface Pan123RemoteFile {
 export interface Pan123ProviderOptions {
   clientId: string
   clientSecret: string
+  uid?: string
   tokenCachePath: string
   errorDetailLevel?: NetdiskErrorDetailLevel
   apiBaseUrl?: string
@@ -244,6 +245,15 @@ async function defaultSleep(milliseconds: number) {
 function isTokenStillValid(payload: Pan123TokenCachePayload, now: Date) {
   const expiresAt = Date.parse(payload.expiredAt)
   return Number.isFinite(expiresAt) && expiresAt - now.getTime() > tokenRefreshSafetyWindowMs
+}
+
+function normalizeTokenUid(value: unknown) {
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    return undefined
+  }
+
+  const normalized = String(value).trim()
+  return /^\d+$/.test(normalized) ? normalized : undefined
 }
 
 function isDuplicateFileNameError(error: unknown) {
@@ -722,8 +732,9 @@ export function createPan123Provider(
   async function getAccessToken(request: NetdiskUploadRequest) {
     const cachedToken = await readCachedToken()
     if (cachedToken && isTokenStillValid(cachedToken, now())) {
-      if (cachedToken.uid != null) {
-        tokenUids.set(cachedToken.accessToken, String(cachedToken.uid))
+      const uid = normalizeTokenUid(cachedToken.uid)
+      if (uid) {
+        tokenUids.set(cachedToken.accessToken, uid)
       }
       return cachedToken.accessToken
     }
@@ -739,14 +750,15 @@ export function createPan123Provider(
     )
 
     await writeCachedToken(payload)
-    if (payload.uid != null) {
-      tokenUids.set(payload.accessToken, String(payload.uid))
+    const uid = normalizeTokenUid(payload.uid)
+    if (uid) {
+      tokenUids.set(payload.accessToken, uid)
     }
     return payload.accessToken
   }
 
   async function getAccessTokenUid(token: string, request: NetdiskUploadRequest) {
-    const uid = tokenUids.get(token)
+    const uid = normalizeTokenUid(options.uid) ?? tokenUids.get(token)
     if (!uid) {
       throw createNetdiskProviderError({
         providerName,
