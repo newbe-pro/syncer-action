@@ -397,6 +397,88 @@ describe('createPan123NetdiskProvider', () => {
     },
   )
 
+  it('preserves the Chinese share name used by the official paid-share example', async () => {
+    const request = await createUploadRequest('测试付费分享链接.zip')
+    const directory = await createTempDirectory()
+    let paidShareBody: Record<string, unknown> | undefined
+
+    const provider = createPan123NetdiskProvider({
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      tokenCachePath: path.join(directory, 'token-cache.json'),
+      fetch: async (input, init) => {
+        const url = typeof input === 'string' ? input : input.toString()
+
+        if (url.endsWith('/api/v1/access_token')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: {
+              accessToken: 'token-1',
+              uid: '10001',
+              expiredAt: '2026-04-10T01:00:00.000Z',
+            },
+          })
+        }
+
+        if (url.includes('/api/v2/file/list')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: {
+              lastFileId: '-1',
+              fileList: [{ fileId: '123', filename: 'ollama', type: 1 }],
+            },
+          })
+        }
+
+        if (url.endsWith('/upload/v1/file/mkdir')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { list: [{ filename: 'ollama', dirID: '123' }] },
+          })
+        }
+
+        if (url.endsWith('/upload/v2/file/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { reuse: true, fileID: 'remote-file-1' },
+          })
+        }
+
+        if (url.endsWith('/api/v1/share/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { shareID: 1, shareKey: 'share-key' },
+          })
+        }
+
+        if (url.endsWith('/api/v1/share/content-payment/create')) {
+          paidShareBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { shareID: 2, shareKey: 'paid-key' },
+          })
+        }
+
+        throw new Error(`Unexpected request: ${url}`)
+      },
+    })
+
+    await expect(provider.uploadAsset(request)).resolves.toMatchObject({
+      paidShareUrl: 'https://10001.share.123pan.cn/123pan/paid-key',
+    })
+    expect(paidShareBody).toEqual({
+      shareName: '测试付费分享链接.zip',
+      fileIDList: 'remote-file-1',
+      payAmount: 2,
+    })
+  })
+
   it('resolves versioned target directories into a release-tag subdirectory', async () => {
     const request = await createUploadRequest()
     const directory = await createTempDirectory()

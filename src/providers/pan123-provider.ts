@@ -158,12 +158,26 @@ function normalizeTargetDirectory(value: string | undefined) {
 
 function normalizeShareName(value: string) {
   const normalized = value
-    .replace(/[^a-zA-Z0-9._ -]/g, '')
+    .replace(/["\\/:*?|><]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 34)
 
   return normalized
+}
+
+function requireShareName(value: string, request: NetdiskUploadRequest) {
+  const shareName = normalizeShareName(value)
+  if (!shareName) {
+  throw createNetdiskProviderError({
+    providerName,
+    stage: 'share',
+    asset: request.asset,
+    error: '123Pan could not derive a valid share name from the asset name.',
+  })
+  }
+
+  return shareName
 }
 
 function isValidShareFileIdList(fileIDList: string) {
@@ -1285,15 +1299,7 @@ export function createPan123Provider(
     request: NetdiskUploadRequest,
     remoteFileId: string,
   ) {
-    const shareName = normalizeShareName(request.asset.assetName)
-    if (!shareName) {
-      throw createNetdiskProviderError({
-        providerName,
-        stage: 'share',
-        asset: request.asset,
-        error: '123Pan could not derive a valid share name from the asset name.',
-      })
-    }
+    const shareName = requireShareName(request.asset.assetName, request)
     if (!isValidShareFileIdList(remoteFileId)) {
       throw createNetdiskProviderError({
         providerName,
@@ -1406,7 +1412,7 @@ export function createPan123Provider(
             token,
             request,
             remoteFileId,
-            normalizeShareName(request.asset.assetName),
+            requireShareName(request.asset.assetName, request),
           ),
         }
       : await createShareUrls(token, request, remoteFileId)
