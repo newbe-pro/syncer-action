@@ -53,6 +53,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           NETDISK_123PAN_CLIENT_ID: ${{ secrets.NETDISK_123PAN_CLIENT_ID }}
           NETDISK_123PAN_CLIENT_SECRET: ${{ secrets.NETDISK_123PAN_CLIENT_SECRET }}
+          NETDISK_123PAN_UID: ${{ secrets.NETDISK_123PAN_UID }}
           SYNCER_ACTION_CONFIG_FILE: syncer-action.config.yml
           SYNCER_ACTION_REPOSITORIES: ${{ inputs.repositories }}
           SYNCER_ACTION_TARGETS: ${{ inputs.targets }}
@@ -88,6 +89,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           NETDISK_123PAN_CLIENT_ID: ${{ secrets.NETDISK_123PAN_CLIENT_ID }}
           NETDISK_123PAN_CLIENT_SECRET: ${{ secrets.NETDISK_123PAN_CLIENT_SECRET }}
+          NETDISK_123PAN_UID: ${{ secrets.NETDISK_123PAN_UID }}
           SYNCER_ACTION_CONFIG_FILE: syncer-action.config.yml
           SYNCER_ACTION_MATRIX_ITEM: ${{ toJson(matrix.item) }}
           SYNCER_ACTION_RESULTS_DIR: .runtime/results
@@ -135,6 +137,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           NETDISK_123PAN_CLIENT_ID: ${{ secrets.NETDISK_123PAN_CLIENT_ID }}
           NETDISK_123PAN_CLIENT_SECRET: ${{ secrets.NETDISK_123PAN_CLIENT_SECRET }}
+          NETDISK_123PAN_UID: ${{ secrets.NETDISK_123PAN_UID }}
           SYNCER_ACTION_CONFIG_FILE: syncer-action.config.yml
           SYNCER_ACTION_RESULTS_DIR: .runtime/results
         run: npm run summarize
