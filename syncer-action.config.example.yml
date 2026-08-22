@@ -13,6 +13,9 @@ providers:
   pan123:
     errorDetailLevel: diagnostic
     apiBaseUrl: https://open-api.123pan.com
+    duplicate: 0
+    containDir: false
+    singleStepUpload: false
 
 repositories:
   - owner: microsoft

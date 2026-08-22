@@ -61,6 +61,9 @@ export interface SyncerActionConfig {
       tokenCachePath: string
       apiBaseUrl?: string
       errorDetailLevel: NetdiskErrorDetailLevel
+      duplicate?: number
+      containDir?: boolean
+      singleStepUpload?: boolean
     }
   }
   repositories: SyncerActionRepository[]
@@ -108,6 +111,9 @@ const configSchema = z.object({
         .object({
           apiBaseUrl: z.string().trim().url().optional(),
           errorDetailLevel: z.enum(['diagnostic', 'summary']).default('diagnostic'),
+          duplicate: z.number().int().nonnegative().optional(),
+          containDir: z.boolean().optional(),
+          singleStepUpload: z.boolean().optional(),
         })
         .default({ errorDetailLevel: 'diagnostic' }),
     })
@@ -254,6 +260,9 @@ function validateRequiredSecrets(input: {
   rootDirectory: string
   pan123ErrorDetailLevel: NetdiskErrorDetailLevel
   pan123ApiBaseUrl?: string
+  pan123Duplicate?: number
+  pan123ContainDir?: boolean
+  pan123SingleStepUpload?: boolean
   metadataStorage: {
     owner?: string
     repo?: string
@@ -341,6 +350,9 @@ function validateRequiredSecrets(input: {
           tokenCachePath: pan123TokenCachePath,
           apiBaseUrl: input.pan123ApiBaseUrl,
           errorDetailLevel: input.pan123ErrorDetailLevel,
+          duplicate: input.pan123Duplicate,
+          containDir: input.pan123ContainDir,
+          singleStepUpload: input.pan123SingleStepUpload,
         },
       },
       repositories: input.repositories,
@@ -376,6 +388,9 @@ export function loadSyncerActionConfig(options?: {
     rootDirectory,
     pan123ErrorDetailLevel: parsedConfig.providers.pan123.errorDetailLevel,
     pan123ApiBaseUrl: parsedConfig.providers.pan123.apiBaseUrl,
+    pan123Duplicate: parsedConfig.providers.pan123.duplicate,
+    pan123ContainDir: parsedConfig.providers.pan123.containDir,
+    pan123SingleStepUpload: parsedConfig.providers.pan123.singleStepUpload,
     metadataStorage: {
       owner: parsedConfig.metadataStorage.owner,
       repo: parsedConfig.metadataStorage.repo,
