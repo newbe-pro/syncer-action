@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdir, open, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
@@ -54,6 +55,7 @@ interface Pan123TokenCachePayload extends Pan123AccessTokenPayload {
 }
 
 interface Pan123CreateDirectoryResponse {
+  dirID?: Pan123FileId
   list?: Array<{
     filename?: string
     dirID?: Pan123FileId
@@ -65,10 +67,13 @@ interface Pan123CreateFileResponse {
   preuploadID?: string
   reuse: boolean
   sliceSize?: number
+  servers?: Pan123UploadServer[]
 }
 
-interface Pan123UploadUrlResponse {
-  presignedURL: string
+type Pan123UploadServer = string | { url?: string; server?: string }
+
+interface Pan123SingleUploadResponse {
+  fileID?: Pan123FileId
 }
 
 interface Pan123UploadCompleteResponse {
@@ -133,6 +138,9 @@ export interface Pan123ProviderOptions {
   sleep?: (milliseconds: number) => Promise<void>
   uploadPollIntervalMs?: number
   maxUploadStatusPolls?: number
+  duplicate?: number
+  containDir?: boolean
+  singleStepUpload?: boolean
 }
 
 function normalizeApiBaseUrl(value: string | undefined) {
@@ -161,6 +169,58 @@ function normalizeShareName(value: string) {
 function isValidShareFileIdList(fileIDList: string) {
   const fileIds = fileIDList.split(',').map((fileId) => fileId.trim()).filter(Boolean)
   return fileIds.length > 0 && fileIds.length <= 100
+}
+
+const maxPan123FileSize = 10 * 1024 * 1024 * 1024
+const invalidPan123FileNameCharacters = /["\\/:*?|><]/
+const imageFileExtensions = new Set([
+  '.apng',
+  '.avif',
+  '.bmp',
+  '.gif',
+  '.jpeg',
+  '.jpg',
+  '.png',
+  '.svg',
+  '.webp',
+])
+
+function isValidFileId(value: Pan123FileId | null | undefined) {
+  if (value == null) {
+    return false
+  }
+
+  const normalized = String(value).trim()
+  return normalized.length > 0 && normalized !== '0' && normalized !== '-1'
+}
+
+function isValidParentFileId(value: Pan123FileId) {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value >= 0
+  }
+
+  return /^\d+$/.test(value.trim())
+}
+
+function classifyUploadType(filename: string) {
+  return imageFileExtensions.has(path.extname(filename).toLowerCase()) ? 1 : 0
+}
+
+function normalizeUploadServer(value: Pan123UploadServer | null | undefined) {
+  const candidate = typeof value === 'string' ? value : value?.url ?? value?.server
+  if (!candidate?.trim()) {
+    return null
+  }
+
+  try {
+    const url = new URL(candidate)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return null
+    }
+    return url.toString().replace(/\/+$/, '')
+  } catch {
+    return null
+  }
 }
 
 async function defaultSleep(milliseconds: number) {
@@ -487,9 +547,10 @@ export function createPan123Provider(
     method: 'GET' | 'POST' = 'POST',
     retry?: NetdiskFailureDiagnostics['retry'],
     uploadLogContext?: Pan123UploadLogContext,
+    baseUrl = apiBaseUrl,
   ) {
     let response: Response
-    const url = new URL(`${apiBaseUrl}${pathname}`)
+    const url = new URL(`${baseUrl}${pathname}`)
 
     if (method === 'GET') {
       for (const [key, value] of Object.entries(body)) {
@@ -746,7 +807,7 @@ export function createPan123Provider(
           '/upload/v1/file/mkdir',
           {
             name: segment,
-            parentID: parentId,
+            parentID: Number(parentId),
           },
           request,
           'directory',
@@ -755,7 +816,8 @@ export function createPan123Provider(
           retry,
         )
 
-        const directoryId = createdDirectory.list?.[0]?.dirID
+        const directoryId =
+          createdDirectory.dirID ?? createdDirectory.list?.[0]?.dirID
         if (!directoryId) {
           throw createNetdiskProviderError({
             providerName,
@@ -778,19 +840,168 @@ export function createPan123Provider(
     return parentId
   }
 
+  async function postMultipart<T>(
+    baseUrl: string,
+    pathname: string,
+    form: FormData,
+    request: NetdiskUploadRequest,
+    token: string,
+    uploadLogContext: Pan123UploadLogContext,
+    retryHint?: NetdiskFailureDiagnostics['retry'],
+  ): Promise<T | null> {
+    return retryStageOperation('upload', async (retry) => {
+      const url = new URL(`${baseUrl}${pathname}`)
+      let response: Response
+      try {
+        response = await fetcher(url.toString(), {
+          method: 'POST',
+          headers: {
+            Platform: 'open_platform',
+            Authorization: `Bearer ${token}`,
+          },
+          body: form,
+          signal: request.signal,
+        })
+      } catch (error) {
+        appendRecentUploadLog(uploadLogContext, {
+          occurredAt: now().toISOString(),
+          attempt: retry?.attempts ?? retryHint?.attempts,
+          message: error instanceof Error ? error.message : String(error),
+        })
+        throw createNetdiskProviderError({
+          providerName,
+          stage: 'upload',
+          asset: request.asset,
+          error,
+          diagnostics: buildDiagnostics({
+            detailLevel: errorDetailLevel,
+            url,
+            method: 'POST',
+            transport: {
+              type: 'network',
+              message: error instanceof Error ? error.message : String(error),
+              causes: collectErrorCauses(error),
+            },
+            retry: buildRetryDiagnostics(retry, uploadLogContext),
+          }),
+        })
+      }
+
+      const responseText = await response.text()
+      let payload: Pan123ApiResponse<T>
+      try {
+        payload = JSON.parse(responseText) as Pan123ApiResponse<T>
+      } catch (error) {
+        appendRecentUploadLog(uploadLogContext, {
+          occurredAt: now().toISOString(),
+          attempt: retry?.attempts ?? retryHint?.attempts,
+          httpStatus: response.status,
+          statusText: response.statusText,
+          message: '123Pan API returned an invalid JSON payload.',
+        })
+        throw createNetdiskProviderError({
+          providerName,
+          stage: 'upload',
+          asset: request.asset,
+          error: new Error('123Pan API returned an invalid JSON payload.', { cause: error }),
+          diagnostics: buildDiagnostics({
+            detailLevel: errorDetailLevel,
+            url,
+            method: 'POST',
+            response,
+            responseBody: responseText,
+            transport: {
+              type: 'invalid_json',
+              message: '123Pan API returned an invalid JSON payload.',
+              causes: collectErrorCauses(error),
+            },
+            retry: buildRetryDiagnostics(retry, uploadLogContext),
+          }),
+        })
+      }
+
+      if (!response.ok || payload.code !== 0) {
+        const message =
+          payload.message || `123Pan API returned ${response.status} ${response.statusText}.`
+        appendRecentUploadLog(uploadLogContext, {
+          occurredAt: now().toISOString(),
+          attempt: retry?.attempts ?? retryHint?.attempts,
+          httpStatus: response.status,
+          statusText: response.statusText,
+          message,
+        })
+        throw createNetdiskProviderError({
+          providerName,
+          stage: 'upload',
+          asset: request.asset,
+          error: new Error(message),
+          diagnostics: buildDiagnostics({
+            detailLevel: errorDetailLevel,
+            url,
+            method: 'POST',
+            response,
+            responseBody: responseText,
+            providerCode: payload.code,
+            providerMessage: payload.message,
+            retry: buildRetryDiagnostics(retry, uploadLogContext),
+          }),
+        })
+      }
+
+      return payload.data
+    })
+  }
+
+  function validateUploadMetadata(request: NetdiskUploadRequest) {
+    const filename = request.asset.assetName
+    if (
+      filename.length >= 255 ||
+      invalidPan123FileNameCharacters.test(filename) ||
+      /^\s*$/.test(filename)
+    ) {
+      throw createNetdiskProviderError({
+        providerName,
+        stage: 'upload',
+        asset: request.asset,
+        error: '123Pan filenames must be shorter than 255 characters, non-empty, and may not contain "\\/:*?|><.',
+      })
+    }
+
+    if (
+      !Number.isFinite(request.file.byteSize) ||
+      request.file.byteSize < 0 ||
+      request.file.byteSize > maxPan123FileSize
+    ) {
+      throw createNetdiskProviderError({
+        providerName,
+        stage: 'upload',
+        asset: request.asset,
+        error: '123Pan files must not exceed 10GB.',
+      })
+    }
+  }
+
   async function uploadFileParts(
     token: string,
     request: NetdiskUploadRequest,
     parentDirectoryId: Pan123FileId,
   ) {
     const uploadLogContext = createUploadLogContext(request.file.byteSize)
+    const targetDirectory = normalizeTargetDirectory(request.destination.targetDirectory)
+    const filename =
+      options.containDir && targetDirectory !== '/'
+        ? `${targetDirectory.replace(/^\/+/, '')}/${request.asset.assetName}`
+        : request.asset.assetName
     const createdFile = await requestJson<Pan123CreateFileResponse>(
-      '/upload/v1/file/create',
+      '/upload/v2/file/create',
       {
         parentFileID: parentDirectoryId,
-        filename: request.asset.assetName,
+        filename,
         etag: request.file.md5,
         size: request.file.byteSize,
+        type: classifyUploadType(request.asset.assetName),
+        duplicate: options.duplicate ?? 0,
+        containDir: options.containDir ?? false,
       },
       request,
       'upload',
@@ -798,7 +1009,7 @@ export function createPan123Provider(
     )
 
     if (createdFile.reuse) {
-      if (!createdFile.fileID) {
+      if (!isValidFileId(createdFile.fileID)) {
         throw createNetdiskProviderError({
           providerName,
           stage: 'upload',
@@ -806,7 +1017,7 @@ export function createPan123Provider(
           error: '123Pan reported a reused upload without a fileID.',
           diagnostics: buildDiagnostics({
             detailLevel: errorDetailLevel,
-            url: new URL(`${apiBaseUrl}/upload/v1/file/create`),
+            url: new URL(`${apiBaseUrl}/upload/v2/file/create`),
             method: 'POST',
           }),
         })
@@ -815,19 +1026,112 @@ export function createPan123Provider(
       return String(createdFile.fileID)
     }
 
-    if (!createdFile.preuploadID || !createdFile.sliceSize) {
+    const uploadServer = (createdFile.servers ?? [])
+      .map((server) => normalizeUploadServer(server))
+      .find((server): server is string => server != null)
+    if (options.singleStepUpload) {
+      if (request.file.byteSize > 1024 * 1024 * 1024) {
+        throw createNetdiskProviderError({
+          providerName,
+          stage: 'upload',
+          asset: request.asset,
+          error: '123Pan single-step uploads are limited to 1GB.',
+        })
+      }
+
+      const uploadDomains = await requestJson<string[]>(
+        '/upload/v2/file/domain',
+        {},
+        request,
+        'upload',
+        token,
+        'GET',
+        undefined,
+        uploadLogContext,
+      )
+      const singleUploadServer = (uploadDomains ?? [])
+        .map((server) => normalizeUploadServer(server))
+        .find((server): server is string => server != null)
+      if (!singleUploadServer) {
+        throw createNetdiskProviderError({
+          providerName,
+          stage: 'upload',
+          asset: request.asset,
+          error: '123Pan did not return a valid upload server for single-step upload.',
+          diagnostics: buildDiagnostics({
+            detailLevel: errorDetailLevel,
+            url: new URL(`${apiBaseUrl}/upload/v2/file/create`),
+            method: 'POST',
+          }),
+        })
+      }
+
+      const contents = await readFile(request.file.filePath)
+      const fileMd5 = createHash('md5').update(contents).digest('hex')
+      const form = new FormData()
+      form.append('parentFileID', String(parentDirectoryId))
+      form.append('filename', filename)
+      form.append('etag', fileMd5)
+      form.append('size', String(request.file.byteSize))
+      if (options.duplicate != null) {
+        form.append('duplicate', String(options.duplicate))
+      }
+      if (options.containDir != null) {
+        form.append('containDir', String(options.containDir))
+      }
+      form.append(
+        'file',
+        new Blob([contents], { type: 'application/octet-stream' }),
+        request.asset.assetName,
+      )
+
+      const result = await postMultipart<Pan123SingleUploadResponse>(
+        singleUploadServer,
+        '/upload/v2/file/single/create',
+        form,
+        request,
+        token,
+        uploadLogContext,
+      )
+      if (!result || !isValidFileId(result.fileID)) {
+        throw createNetdiskProviderError({
+          providerName,
+          stage: 'upload',
+          asset: request.asset,
+          error: '123Pan single-step upload did not return a fileID.',
+          diagnostics: buildDiagnostics({
+            detailLevel: errorDetailLevel,
+            url: new URL(`${singleUploadServer}/upload/v2/file/single/create`),
+            method: 'POST',
+            retry: buildRetryDiagnostics(undefined, uploadLogContext),
+          }),
+        })
+      }
+      updateUploadProgress(uploadLogContext, request.file.byteSize)
+      return String(result.fileID)
+    }
+
+    if (
+      !createdFile.preuploadID ||
+      typeof createdFile.sliceSize !== 'number' ||
+      !Number.isFinite(createdFile.sliceSize) ||
+      createdFile.sliceSize <= 0 ||
+      !uploadServer
+    ) {
       throw createNetdiskProviderError({
         providerName,
         stage: 'upload',
         asset: request.asset,
-        error: '123Pan did not return preuploadID/sliceSize for a non-reused upload.',
+        error: '123Pan did not return preuploadID, a positive sliceSize, and an upload server for a non-reused upload.',
         diagnostics: buildDiagnostics({
           detailLevel: errorDetailLevel,
-          url: new URL(`${apiBaseUrl}/upload/v1/file/create`),
+          url: new URL(`${apiBaseUrl}/upload/v2/file/create`),
           method: 'POST',
         }),
       })
     }
+    const sliceSize = createdFile.sliceSize as number
+    const preuploadID = createdFile.preuploadID
 
     const handle = await open(request.file.filePath, 'r')
 
@@ -835,91 +1139,40 @@ export function createPan123Provider(
       for (
         let sliceNo = 1, offset = 0;
         offset < request.file.byteSize;
-        sliceNo += 1, offset += createdFile.sliceSize
+        sliceNo += 1,
+        offset += sliceSize
       ) {
         const expectedLength = Math.min(
-          createdFile.sliceSize,
+          sliceSize,
           request.file.byteSize - offset,
         )
         const chunk = Buffer.allocUnsafe(expectedLength)
         const { bytesRead } = await handle.read(chunk, 0, expectedLength, offset)
+        const slice = chunk.subarray(0, bytesRead)
+        const sliceMD5 = createHash('md5').update(slice).digest('hex')
+        const form = new FormData()
+        form.append('preuploadID', preuploadID)
+        form.append('sliceNo', String(sliceNo))
+        form.append('sliceMD5', sliceMD5)
+        form.append(
+          'slice',
+          new Blob([slice], { type: 'application/octet-stream' }),
+          `${request.asset.assetName}.part${sliceNo}`,
+        )
 
-        await retryStageOperation('upload', async (retry) => {
-          const uploadUrl = await requestJson<Pan123UploadUrlResponse>(
-            '/upload/v1/file/get_upload_url',
-            {
-              preuploadID: createdFile.preuploadID,
-              sliceNo,
-            },
-            request,
-            'upload',
-            token,
-            'POST',
-            retry,
-            uploadLogContext,
-          )
-
-          let response: Response
-          const uploadUrlObject = new URL(uploadUrl.presignedURL)
-          try {
-            response = await fetcher(uploadUrl.presignedURL, {
-              method: 'PUT',
-              headers: {
-                'Content-Type': 'application/octet-stream',
-              },
-              body: chunk.subarray(0, bytesRead),
-              signal: request.signal,
-            })
-          } catch (error) {
-            appendRecentUploadLog(uploadLogContext, {
-              occurredAt: now().toISOString(),
-              attempt: retry?.attempts,
-              message: error instanceof Error ? error.message : String(error),
-            })
-            throw createNetdiskProviderError({
-              providerName,
-              stage: 'upload',
-              asset: request.asset,
-              error,
-              diagnostics: buildDiagnostics({
-                detailLevel: errorDetailLevel,
-                url: uploadUrlObject,
-                method: 'PUT',
-                transport: {
-                  type: 'network',
-                  message: error instanceof Error ? error.message : String(error),
-                  causes: collectErrorCauses(error),
-                },
-                retry: buildRetryDiagnostics(retry, uploadLogContext),
-              }),
-            })
-          }
-
-          if (!response.ok) {
-            const responseText = await response.text()
-            appendRecentUploadLog(uploadLogContext, {
-              occurredAt: now().toISOString(),
-              attempt: retry?.attempts,
-              httpStatus: response.status,
-              statusText: response.statusText,
-              message: `123Pan PUT upload failed with ${response.status} ${response.statusText}.`,
-            })
-            throw createNetdiskProviderError({
-              providerName,
-              stage: 'upload',
-              asset: request.asset,
-              error: `123Pan PUT upload failed with ${response.status} ${response.statusText}.`,
-              diagnostics: buildDiagnostics({
-                detailLevel: errorDetailLevel,
-                url: uploadUrlObject,
-                method: 'PUT',
-                response,
-                responseBody: responseText,
-                retry: buildRetryDiagnostics(retry, uploadLogContext),
-              }),
-            })
-          }
-        })
+        await postMultipart(
+          uploadServer,
+          '/upload/v2/file/slice',
+          form,
+          request,
+          token,
+          uploadLogContext,
+          {
+            attempts: sliceNo,
+            maxAttempts: Math.ceil(request.file.byteSize / sliceSize),
+            intervalMs: 0,
+          },
+        )
 
         updateUploadProgress(uploadLogContext, offset + bytesRead)
       }
@@ -927,59 +1180,32 @@ export function createPan123Provider(
       await handle.close()
     }
 
-    const completedUpload = await requestJson<Pan123UploadCompleteResponse>(
-      '/upload/v1/file/upload_complete',
-      { preuploadID: createdFile.preuploadID },
-      request,
-      'upload',
-      token,
-      'POST',
-      undefined,
-      uploadLogContext,
-    )
-
-    if (completedUpload.completed && completedUpload.fileID) {
-      return String(completedUpload.fileID)
-    }
-
-    if (!completedUpload.async) {
-      appendRecentUploadLog(uploadLogContext, {
-        occurredAt: now().toISOString(),
-        message: '123Pan upload did not complete and did not request async polling.',
-      })
-      throw createNetdiskProviderError({
-        providerName,
-        stage: 'upload',
-        asset: request.asset,
-        error: '123Pan upload did not complete and did not request async polling.',
-        diagnostics: buildDiagnostics({
-          detailLevel: errorDetailLevel,
-          url: new URL(`${apiBaseUrl}/upload/v1/file/upload_complete`),
-          method: 'POST',
-          retry: buildRetryDiagnostics(undefined, uploadLogContext),
-        }),
-      })
-    }
-
-    for (let attempt = 0; attempt < maxUploadStatusPolls; attempt += 1) {
-      await sleep(uploadPollIntervalMs)
-      const uploadResult = await requestJson<Pan123UploadAsyncResultResponse>(
-        '/upload/v1/file/upload_async_result',
-        { preuploadID: createdFile.preuploadID },
+    for (let attempt = 0; attempt <= maxUploadStatusPolls; attempt += 1) {
+      if (attempt > 0) {
+        await sleep(uploadPollIntervalMs)
+      }
+      const completedUpload = await requestJson<Pan123UploadCompleteResponse>(
+        '/upload/v2/file/upload_complete',
+        { preuploadID },
         request,
         'upload',
         token,
         'POST',
         {
           attempts: attempt + 1,
-          maxAttempts: maxUploadStatusPolls,
+          maxAttempts: maxUploadStatusPolls + 1,
           intervalMs: uploadPollIntervalMs,
         },
         uploadLogContext,
+        apiBaseUrl,
       )
 
-      if (uploadResult.completed && uploadResult.fileID) {
-        return String(uploadResult.fileID)
+      if (completedUpload.completed && isValidFileId(completedUpload.fileID)) {
+        return String(completedUpload.fileID)
+      }
+
+      if (completedUpload.completed || attempt >= maxUploadStatusPolls) {
+        break
       }
 
       appendRecentUploadLog(uploadLogContext, {
@@ -996,12 +1222,12 @@ export function createPan123Provider(
       error: `123Pan upload polling timed out after ${maxUploadStatusPolls} attempts.`,
       diagnostics: buildDiagnostics({
         detailLevel: errorDetailLevel,
-        url: new URL(`${apiBaseUrl}/upload/v1/file/upload_async_result`),
+        url: new URL(`${apiBaseUrl}/upload/v2/file/upload_complete`),
         method: 'POST',
         retry: buildRetryDiagnostics(
           {
-            attempts: maxUploadStatusPolls,
-            maxAttempts: maxUploadStatusPolls,
+            attempts: maxUploadStatusPolls + 1,
+            maxAttempts: maxUploadStatusPolls + 1,
             intervalMs: uploadPollIntervalMs,
           },
           uploadLogContext,
@@ -1196,6 +1422,7 @@ export function createPan123Provider(
   return {
     providerName,
     async uploadAsset(request) {
+      validateUploadMetadata(request)
       const targetDirectory = normalizeTargetDirectory(
         request.destination.targetDirectory,
       )
@@ -1211,6 +1438,16 @@ export function createPan123Provider(
 
       const token = await getAccessToken(request)
       const parentDirectoryId = await ensureDirectory(token, request, targetDirectory)
+      if (
+        !isValidParentFileId(parentDirectoryId)
+      ) {
+        throw createNetdiskProviderError({
+          providerName,
+          stage: 'upload',
+          asset: request.asset,
+          error: '123Pan returned an invalid parentFileID.',
+        })
+      }
 
       let remoteFileId: string
       try {

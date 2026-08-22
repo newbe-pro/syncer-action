@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -78,9 +79,10 @@ async function createUploadRequest(assetName = 'ollama-linux-amd64.tgz') {
   }
 }
 
-function createJsonResponse(body: unknown, status = 200) {
+function createJsonResponse(body: unknown, status = 200, statusText?: string) {
   return new Response(JSON.stringify(body), {
     status,
+    ...(statusText ? { statusText } : {}),
     headers: {
       'Content-Type': 'application/json',
     },
@@ -89,6 +91,25 @@ function createJsonResponse(body: unknown, status = 200) {
 
 function getSearchParam(url: string, key: string) {
   return new URL(url).searchParams.get(key)
+}
+
+function getMultipartField(init: RequestInit | undefined, key: string) {
+  const body = init?.body
+  if (!(body instanceof FormData)) {
+    return undefined
+  }
+
+  return body.get(key)?.toString()
+}
+
+async function getMultipartBytes(init: RequestInit | undefined, key: string) {
+  const body = init?.body
+  if (!(body instanceof FormData)) {
+    return undefined
+  }
+
+  const value = body.get(key)
+  return value instanceof Blob ? new Uint8Array(await value.arrayBuffer()) : undefined
 }
 
 async function captureCreateFileRequest(assetName: string) {
@@ -103,6 +124,8 @@ async function captureCreateFileRequest(assetName: string) {
           etag?: string
           size?: number
           type?: number
+          duplicate?: number
+          containDir?: boolean
         }
       }
     | undefined
@@ -120,6 +143,7 @@ async function captureCreateFileRequest(assetName: string) {
           message: 'ok',
           data: {
             accessToken: 'token-1',
+            uid: '10001',
             expiredAt: '2026-04-10T01:00:00.000Z',
           },
         })
@@ -138,7 +162,7 @@ async function captureCreateFileRequest(assetName: string) {
                 ? []
                 : [
                     {
-                      fileId: 'target-dir',
+                      fileId: '123',
                       filename: 'ollama',
                       type: 1,
                     },
@@ -155,14 +179,14 @@ async function captureCreateFileRequest(assetName: string) {
             list: [
               {
                 filename: 'ollama',
-                dirID: 'target-dir',
+                dirID: '123',
               },
             ],
           },
         })
       }
 
-      if (url.endsWith('/upload/v1/file/create')) {
+      if (url.endsWith('/upload/v2/file/create')) {
         createFileRequest = {
           url,
           body: JSON.parse(String(init?.body ?? '{}')) as {
@@ -183,6 +207,13 @@ async function captureCreateFileRequest(assetName: string) {
         })
       }
 
+      if (url.endsWith('/api/v1/share/content-payment/create')) {
+        return createJsonResponse({
+          code: 0,
+          message: 'ok',
+          data: { shareID: 87187531, shareKey: 'paid-share-key' },
+        })
+      }
       if (url.endsWith('/api/v1/share/create')) {
         return createJsonResponse({
           code: 0,
@@ -211,20 +242,23 @@ async function captureCreateFileRequest(assetName: string) {
 
 describe('createPan123NetdiskProvider', () => {
   it.each(['codex-linux-x64.zip', 'ollama-linux-amd64.tgz', 'cover.png'])(
-    'uses the file upload API without a type field for %s',
+    'uses the v2 file upload API with metadata fields for %s',
     async (assetName) => {
       await expect(captureCreateFileRequest(assetName)).resolves.toMatchObject({
-        url: expect.stringContaining('/upload/v1/file/create'),
+        url: expect.stringContaining('/upload/v2/file/create'),
         body: {
-          parentFileID: 'target-dir',
+          parentFileID: '123',
           filename: assetName,
           etag: 'md5-hash',
           size: 12,
+          type: assetName === 'cover.png' ? 1 : 0,
+          duplicate: 0,
+          containDir: false,
         },
       })
 
       const request = await captureCreateFileRequest(assetName)
-      expect(request?.body.type).toBeUndefined()
+      expect(request?.body.type).toBe(assetName === 'cover.png' ? 1 : 0)
     },
   )
 
@@ -243,6 +277,15 @@ describe('createPan123NetdiskProvider', () => {
             }
           }
         | undefined
+      let createPaidShareRequest:
+        | {
+            body: {
+              shareName?: string
+              fileIDList?: string
+              payAmount?: number
+            }
+          }
+        | undefined
 
       const provider = createPan123NetdiskProvider({
         clientId: 'client-id',
@@ -257,6 +300,7 @@ describe('createPan123NetdiskProvider', () => {
               message: 'ok',
               data: {
                 accessToken: 'token-1',
+                uid: '10001',
                 expiredAt: '2026-04-10T01:00:00.000Z',
               },
             })
@@ -270,7 +314,7 @@ describe('createPan123NetdiskProvider', () => {
                 lastFileId: '-1',
                 fileList: [
                   {
-                    fileId: 'target-dir',
+                    fileId: '123',
                     filename: 'ollama',
                     type: 1,
                   },
@@ -279,7 +323,7 @@ describe('createPan123NetdiskProvider', () => {
             })
           }
 
-          if (url.endsWith('/upload/v1/file/create')) {
+          if (url.endsWith('/upload/v2/file/create')) {
             return createJsonResponse({
               code: 0,
               message: 'ok',
@@ -290,6 +334,20 @@ describe('createPan123NetdiskProvider', () => {
             })
           }
 
+          if (url.endsWith('/api/v1/share/content-payment/create')) {
+            createPaidShareRequest = {
+              body: JSON.parse(String(init?.body ?? '{}')) as {
+                shareName?: string
+                fileIDList?: string
+                payAmount?: number
+              },
+            }
+            return createJsonResponse({
+              code: 0,
+              message: 'ok',
+              data: { shareID: 87187531, shareKey: 'paid-share-key' },
+            })
+          }
           if (url.endsWith('/api/v1/share/create')) {
             createShareRequest = {
               url,
@@ -329,6 +387,13 @@ describe('createPan123NetdiskProvider', () => {
           fileIDList: 'remote-file-1',
         },
       })
+      expect(createPaidShareRequest).toEqual({
+        body: {
+          shareName: assetName,
+          fileIDList: 'remote-file-1',
+          payAmount: 2,
+        },
+      })
     },
   )
 
@@ -357,6 +422,7 @@ describe('createPan123NetdiskProvider', () => {
             message: 'ok',
             data: {
               accessToken: 'token-1',
+              uid: '10001',
               expiredAt: '2026-04-10T01:00:00.000Z',
             },
           })
@@ -373,15 +439,15 @@ describe('createPan123NetdiskProvider', () => {
                 parentFileId === '0'
                   ? [
                       {
-                        fileId: 'dir-syncer',
+                        fileId: '124',
                         filename: 'syncer',
                         type: 1,
                       },
                     ]
-                  : parentFileId === 'dir-syncer'
+                  : parentFileId === '124'
                     ? [
                         {
-                          fileId: 'dir-ollama',
+                          fileId: '125',
                           filename: 'ollama',
                           type: 1,
                         },
@@ -402,14 +468,14 @@ describe('createPan123NetdiskProvider', () => {
               list: [
                 {
                   filename: body.name,
-                  dirID: body.name === 'v0.6.0' ? 'dir-version' : `dir-${body.name}`,
+                  dirID: body.name === 'v0.6.0' ? '126' : `dir-${body.name}`,
                 },
               ],
             },
           })
         }
 
-        if (url.endsWith('/upload/v1/file/create')) {
+        if (url.endsWith('/upload/v2/file/create')) {
           createFileRequest = {
             body: JSON.parse(String(init?.body ?? '{}')) as { parentFileID?: string | number },
           }
@@ -423,6 +489,13 @@ describe('createPan123NetdiskProvider', () => {
           })
         }
 
+        if (url.endsWith('/api/v1/share/content-payment/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { shareID: 87187531, shareKey: 'paid-share-key' },
+          })
+        }
         if (url.endsWith('/api/v1/share/create')) {
           return createJsonResponse({
             code: 0,
@@ -447,7 +520,7 @@ describe('createPan123NetdiskProvider', () => {
     })
 
     expect(mkdirNames).toEqual(['v0.6.0'])
-    expect(createFileRequest?.body.parentFileID).toBe('dir-version')
+    expect(createFileRequest?.body.parentFileID).toBe('126')
   })
 
   it('uploads files and persists a reusable token cache', async () => {
@@ -455,6 +528,14 @@ describe('createPan123NetdiskProvider', () => {
     const directory = await createTempDirectory()
     const tokenCachePath = path.join(directory, 'token-cache.json')
     const calls: Array<{ url: string; method: string }> = []
+    let sliceRequest:
+      | {
+          preuploadID?: string
+          sliceNo?: string
+          sliceMD5?: string
+          slice?: Uint8Array
+        }
+      | undefined
 
     const provider = createPan123NetdiskProvider({
       clientId: 'client-id',
@@ -473,6 +554,7 @@ describe('createPan123NetdiskProvider', () => {
             message: 'ok',
             data: {
               accessToken: 'token-1',
+              uid: '10001',
               expiredAt: '2026-04-10T01:00:00.000Z',
             },
           })
@@ -488,7 +570,7 @@ describe('createPan123NetdiskProvider', () => {
             })
           }
 
-          if (parentFileId === 'dir-syncer') {
+          if (parentFileId === '124') {
             return createJsonResponse({
               code: 0,
               message: 'ok',
@@ -496,7 +578,7 @@ describe('createPan123NetdiskProvider', () => {
                 lastFileId: '-1',
                 fileList: [
                   {
-                    fileId: 'dir-ollama',
+                    fileId: '125',
                     filename: 'ollama',
                     type: 1,
                   },
@@ -505,7 +587,7 @@ describe('createPan123NetdiskProvider', () => {
             })
           }
 
-          if (parentFileId === 'dir-ollama') {
+          if (parentFileId === '125') {
             return createJsonResponse({
               code: 0,
               message: 'ok',
@@ -526,40 +608,41 @@ describe('createPan123NetdiskProvider', () => {
               list: [
                 {
                   filename: body.name,
-                  dirID: body.name === 'syncer' ? 'dir-syncer' : 'dir-ollama',
+                  dirID: body.name === 'syncer' ? '124' : '125',
                 },
               ],
             },
           })
         }
 
-        if (url.endsWith('/upload/v1/file/create')) {
+        if (url.endsWith('/upload/v2/file/create')) {
           return createJsonResponse({
             code: 0,
             message: 'ok',
             data: {
               reuse: false,
+              servers: ['https://upload.123pan.example'],
               preuploadID: 'preupload-1',
               sliceSize: 1024,
             },
           })
         }
 
-        if (url.endsWith('/upload/v1/file/get_upload_url')) {
+        if (url.endsWith('/upload/v2/file/slice')) {
+          sliceRequest = {
+            preuploadID: getMultipartField(init, 'preuploadID'),
+            sliceNo: getMultipartField(init, 'sliceNo'),
+            sliceMD5: getMultipartField(init, 'sliceMD5'),
+            slice: await getMultipartBytes(init, 'slice'),
+          }
           return createJsonResponse({
             code: 0,
             message: 'ok',
-            data: {
-              presignedURL: 'https://upload.123pan.example/part-1',
-            },
+            data: {},
           })
         }
 
-        if (url === 'https://upload.123pan.example/part-1') {
-          return new Response(null, { status: 200 })
-        }
-
-        if (url.endsWith('/upload/v1/file/upload_complete')) {
+        if (url.endsWith('/upload/v2/file/upload_complete')) {
           return createJsonResponse({
             code: 0,
             message: 'ok',
@@ -571,6 +654,13 @@ describe('createPan123NetdiskProvider', () => {
           })
         }
 
+        if (url.endsWith('/api/v1/share/content-payment/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { shareID: 87187531, shareKey: 'paid-share-key' },
+          })
+        }
         if (url.endsWith('/api/v1/share/create')) {
           return createJsonResponse({
             code: 0,
@@ -590,6 +680,7 @@ describe('createPan123NetdiskProvider', () => {
       providerName: '123pan',
       remoteFileId: 'remote-file-1',
       shareUrl: 'https://www.123pan.com/s/PvitVv-nPeLH',
+      paidShareUrl: 'https://10001.share.123pan.cn/123pan/paid-share-key',
       uploadedAt: '2026-04-10T00:00:00.000Z',
     })
 
@@ -598,6 +689,12 @@ describe('createPan123NetdiskProvider', () => {
     }
     expect(tokenCache.accessToken).toBe('token-1')
     expect(calls.filter((call) => call.url.endsWith('/api/v1/access_token'))).toHaveLength(1)
+    expect(sliceRequest).toMatchObject({
+      preuploadID: 'preupload-1',
+      sliceNo: '1',
+      sliceMD5: createHash('md5').update('hello ollama').digest('hex'),
+    })
+    expect(sliceRequest?.slice).toEqual(new Uint8Array(Buffer.from('hello ollama')))
   })
 
   it('reuses cached tokens until they expire and then refreshes them', async () => {
@@ -622,6 +719,7 @@ describe('createPan123NetdiskProvider', () => {
             message: 'ok',
             data: {
               accessToken: `token-${tokenCounter}`,
+              uid: '10001',
               expiredAt:
                 tokenCounter === 1
                   ? '2026-04-10T01:00:00.000Z'
@@ -642,7 +740,7 @@ describe('createPan123NetdiskProvider', () => {
                   ? []
                   : [
                       {
-                        fileId: 'target-dir',
+                        fileId: '123',
                         filename: 'ollama',
                         type: 1,
                       },
@@ -659,14 +757,14 @@ describe('createPan123NetdiskProvider', () => {
               list: [
                 {
                   filename: 'ollama',
-                  dirID: 'target-dir',
+                  dirID: '123',
                 },
               ],
             },
           })
         }
 
-        if (url.endsWith('/upload/v1/file/create')) {
+        if (url.endsWith('/upload/v2/file/create')) {
           return createJsonResponse({
             code: 0,
             message: 'ok',
@@ -677,6 +775,13 @@ describe('createPan123NetdiskProvider', () => {
           })
         }
 
+        if (url.endsWith('/api/v1/share/content-payment/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { shareID: 87187531, shareKey: 'paid-share-key' },
+          })
+        }
         if (url.endsWith('/api/v1/share/create')) {
           return createJsonResponse({
             code: 0,
@@ -719,10 +824,145 @@ describe('createPan123NetdiskProvider', () => {
     expect(tokenCounter).toBe(2)
   })
 
+  it.each<[string, number, RegExp]>([
+    ['a/name.tar.gz', 12, /filenames must be shorter than 255/i],
+    ['', 12, /filenames must be shorter than 255/i],
+    ['valid-name.tar.gz', -1, /files must not exceed 10gb/i],
+    ['valid-name.tar.gz', 10 * 1024 * 1024 * 1024 + 1, /files must not exceed 10gb/i],
+  ])('rejects invalid upload metadata before network access', async (assetName, byteSize, message) => {
+    const request = await createUploadRequest('valid-name.tar.gz')
+    const directory = await createTempDirectory()
+    let fetchCallCount = 0
+    const provider = createPan123NetdiskProvider({
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      tokenCachePath: path.join(directory, 'token-cache.json'),
+      fetch: async () => {
+        fetchCallCount += 1
+        throw new Error('network access should not occur')
+      },
+    })
+
+    await expect(
+      provider.uploadAsset({
+        ...request,
+        asset: { ...request.asset, assetName },
+        file: { ...request.file, byteSize },
+      }),
+    ).rejects.toThrow(message)
+    expect(fetchCallCount).toBe(0)
+  })
+
+  it('uploads a file through the v2 single-step multipart path', async () => {
+    const request = await createUploadRequest('cover.png')
+    const directory = await createTempDirectory()
+    const calls: string[] = []
+    let singleRequest:
+      | {
+          parentFileID?: string
+          filename?: string
+          etag?: string
+          size?: string
+          duplicate?: string
+          containDir?: string
+          file?: Uint8Array
+        }
+      | undefined
+
+    const provider = createPan123NetdiskProvider({
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      tokenCachePath: path.join(directory, 'token-cache.json'),
+      singleStepUpload: true,
+      duplicate: 2,
+      containDir: true,
+      now: () => new Date('2026-04-10T00:00:00.000Z'),
+      fetch: async (input, init) => {
+        const url = typeof input === 'string' ? input : input.toString()
+        calls.push(url)
+
+        if (url.endsWith('/api/v1/access_token')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: {
+              accessToken: 'token-1',
+              uid: '10001',
+              expiredAt: '2026-04-10T01:00:00.000Z',
+            },
+          })
+        }
+        if (url.endsWith('/upload/v2/file/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { reuse: false, servers: ['https://upload.123pan.example'] },
+          })
+        }
+        if (url.endsWith('/upload/v2/file/domain')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: ['https://upload.123pan.example'],
+          })
+        }
+        if (url.endsWith('/upload/v2/file/single/create')) {
+          singleRequest = {
+            parentFileID: getMultipartField(init, 'parentFileID'),
+            filename: getMultipartField(init, 'filename'),
+            etag: getMultipartField(init, 'etag'),
+            size: getMultipartField(init, 'size'),
+            duplicate: getMultipartField(init, 'duplicate'),
+            containDir: getMultipartField(init, 'containDir'),
+            file: await getMultipartBytes(init, 'file'),
+          }
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { fileID: 'single-file' },
+          })
+        }
+        if (url.endsWith('/api/v1/share/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { shareID: 1, shareKey: 'share-key' },
+          })
+        }
+        if (url.endsWith('/api/v1/share/content-payment/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { shareID: 2, shareKey: 'paid-key' },
+          })
+        }
+        throw new Error(`Unexpected request: ${url}`)
+      },
+    })
+    await expect(
+      provider.uploadAsset({
+        ...request,
+        destination: { ...request.destination, targetDirectory: '/' },
+      }),
+    ).resolves.toMatchObject({
+      remoteFileId: 'single-file',
+      paidShareUrl: 'https://10001.share.123pan.cn/123pan/paid-key',
+    })
+    expect(singleRequest).toMatchObject({
+      parentFileID: '0',
+      filename: 'cover.png',
+      etag: createHash('md5').update('hello ollama').digest('hex'),
+      size: '12',
+      duplicate: '2',
+      containDir: 'true',
+    })
+    expect(singleRequest?.file).toEqual(new Uint8Array(Buffer.from('hello ollama')))
+    expect(calls.some((url) => url.endsWith('/upload/v2/file/slice'))).toBe(false)
+    expect(calls.some((url) => url.endsWith('/upload/v2/file/upload_complete'))).toBe(false)
+  })
   it('normalizes authentication failures', async () => {
     const request = await createUploadRequest()
     const directory = await createTempDirectory()
-
     const provider = createPan123NetdiskProvider({
       clientId: 'client-id',
       clientSecret: 'client-secret',
@@ -735,11 +975,9 @@ describe('createPan123NetdiskProvider', () => {
             401,
           )
         }
-
         throw new Error(`Unexpected request: ${url}`)
       },
     })
-
     await expect(provider.uploadAsset(request)).rejects.toThrow(
       /123pan auth failed .* invalid credentials/i,
     )
@@ -760,11 +998,9 @@ describe('createPan123NetdiskProvider', () => {
       },
     })
   })
-
   it('normalizes directory failures', async () => {
     const request = await createUploadRequest()
     const directory = await createTempDirectory()
-
     const provider = createPan123NetdiskProvider({
       clientId: 'client-id',
       clientSecret: 'client-secret',
@@ -778,6 +1014,7 @@ describe('createPan123NetdiskProvider', () => {
             message: 'ok',
             data: {
               accessToken: 'token-1',
+              uid: '10001',
               expiredAt: '2026-04-10T01:00:00.000Z',
             },
           })
@@ -792,11 +1029,9 @@ describe('createPan123NetdiskProvider', () => {
         if (url.endsWith('/upload/v1/file/mkdir')) {
           return createJsonResponse({ code: 500, message: 'mkdir failed', data: null })
         }
-
         throw new Error(`Unexpected request: ${url}`)
       },
     })
-
     await expect(provider.uploadAsset(request)).rejects.toThrow(/123pan directory failed/i)
     await expect(provider.uploadAsset(request)).rejects.toMatchObject({
       diagnostics: {
@@ -815,11 +1050,9 @@ describe('createPan123NetdiskProvider', () => {
       },
     })
   })
-
   it('normalizes upload failures', async () => {
     const request = await createUploadRequest()
     const directory = await createTempDirectory()
-
     const provider = createPan123NetdiskProvider({
       clientId: 'client-id',
       clientSecret: 'client-secret',
@@ -833,6 +1066,7 @@ describe('createPan123NetdiskProvider', () => {
             message: 'ok',
             data: {
               accessToken: 'token-1',
+              uid: '10001',
               expiredAt: '2026-04-10T01:00:00.000Z',
             },
           })
@@ -848,38 +1082,33 @@ describe('createPan123NetdiskProvider', () => {
           return createJsonResponse({
             code: 0,
             message: 'ok',
-            data: { list: [{ filename: 'syncer', dirID: 'target-dir' }] },
+            data: { list: [{ filename: 'syncer', dirID: '123' }] },
           })
         }
-        if (url.endsWith('/upload/v1/file/create')) {
+        if (url.endsWith('/upload/v2/file/create')) {
           return createJsonResponse({
             code: 0,
             message: 'ok',
-            data: { reuse: false, preuploadID: 'preupload-1', sliceSize: 1024 },
+            data: { reuse: false, servers: ['https://upload.123pan.example'], preuploadID: 'preupload-1', sliceSize: 1024 },
           })
         }
-        if (url.endsWith('/upload/v1/file/get_upload_url')) {
-          return createJsonResponse({
-            code: 0,
-            message: 'ok',
-            data: { presignedURL: 'https://upload.123pan.example/failure' },
-          })
+        if (url.endsWith('/upload/v2/file/slice')) {
+          return createJsonResponse(
+            { code: 500, message: 'broken upload', data: null },
+            500,
+            'broken upload',
+          )
         }
-        if (url === 'https://upload.123pan.example/failure') {
-          return new Response(null, { status: 500, statusText: 'broken upload' })
-        }
-
         throw new Error(`Unexpected request: ${url}`)
       },
     })
-
     await expect(provider.uploadAsset(request)).rejects.toThrow(/123pan upload failed/i)
     await expect(provider.uploadAsset(request)).rejects.toMatchObject({
       diagnostics: {
         request: {
-          method: 'PUT',
+          method: 'POST',
           host: 'upload.123pan.example',
-          path: '/failure',
+          path: '/upload/v2/file/slice',
         },
         response: {
           status: 500,
@@ -893,11 +1122,9 @@ describe('createPan123NetdiskProvider', () => {
       },
     })
   })
-
-  it('captures recent upload progress for failed PUT uploads', async () => {
+  it('captures recent upload progress for failed multipart uploads', async () => {
     const request = await createUploadRequest()
     const directory = await createTempDirectory()
-
     const provider = createPan123NetdiskProvider({
       clientId: 'client-id',
       clientSecret: 'client-secret',
@@ -911,6 +1138,7 @@ describe('createPan123NetdiskProvider', () => {
             message: 'ok',
             data: {
               accessToken: 'token-1',
+              uid: '10001',
               expiredAt: '2026-04-10T01:00:00.000Z',
             },
           })
@@ -926,37 +1154,29 @@ describe('createPan123NetdiskProvider', () => {
           return createJsonResponse({
             code: 0,
             message: 'ok',
-            data: { list: [{ filename: 'syncer', dirID: 'target-dir' }] },
+            data: { list: [{ filename: 'syncer', dirID: '123' }] },
           })
         }
-        if (url.endsWith('/upload/v1/file/create')) {
+        if (url.endsWith('/upload/v2/file/create')) {
           return createJsonResponse({
             code: 0,
             message: 'ok',
-            data: { reuse: false, preuploadID: 'preupload-1', sliceSize: 4 },
+            data: { reuse: false, servers: ['https://upload.123pan.example'], preuploadID: 'preupload-1', sliceSize: 4 },
           })
         }
-        if (url.endsWith('/upload/v1/file/get_upload_url')) {
-          const body = JSON.parse(String(init?.body ?? '{}')) as { sliceNo?: number }
-          return createJsonResponse({
-            code: 0,
-            message: 'ok',
-            data: {
-              presignedURL: `https://upload.123pan.example/part-${body.sliceNo}`,
-            },
-          })
+        if (url.endsWith('/upload/v2/file/slice')) {
+          const sliceNo = getMultipartField(init, 'sliceNo')
+          if (sliceNo === '1') {
+            return createJsonResponse({ code: 0, message: 'ok', data: {} })
+          }
+          return createJsonResponse(
+            { code: 500, message: 'rate limited', data: null },
+            500,
+          )
         }
-        if (url === 'https://upload.123pan.example/part-1') {
-          return new Response(null, { status: 200 })
-        }
-        if (url === 'https://upload.123pan.example/part-2') {
-          return new Response(null, { status: 500, statusText: 'rate limited' })
-        }
-
         throw new Error(`Unexpected request: ${url}`)
       },
     })
-
     await expect(provider.uploadAsset(request)).rejects.toMatchObject({
       diagnostics: {
         retry: {
@@ -967,7 +1187,7 @@ describe('createPan123NetdiskProvider', () => {
             expect.objectContaining({
               attempt: 3,
               httpStatus: 500,
-              message: '123Pan PUT upload failed with 500 rate limited.',
+              message: 'rate limited',
               uploadedBytes: 4,
               totalBytes: 12,
             }),
@@ -984,11 +1204,9 @@ describe('createPan123NetdiskProvider', () => {
       },
     })
   })
-
   it('captures invalid JSON responses with redacted body excerpts', async () => {
     const request = await createUploadRequest()
     const directory = await createTempDirectory()
-
     const provider = createPan123NetdiskProvider({
       clientId: 'client-id',
       clientSecret: 'client-secret',
@@ -1001,6 +1219,7 @@ describe('createPan123NetdiskProvider', () => {
             message: 'ok',
             data: {
               accessToken: 'token-1',
+              uid: '10001',
               expiredAt: '2026-04-10T01:00:00.000Z',
             },
           })
@@ -1021,11 +1240,9 @@ describe('createPan123NetdiskProvider', () => {
             },
           })
         }
-
         throw new Error(`Unexpected request: ${url}`)
       },
     })
-
     await expect(provider.uploadAsset(request)).rejects.toMatchObject({
       diagnostics: {
         request: {
@@ -1044,11 +1261,9 @@ describe('createPan123NetdiskProvider', () => {
       },
     })
   })
-
   it('captures network exceptions with transport causes', async () => {
     const request = await createUploadRequest()
     const directory = await createTempDirectory()
-
     const provider = createPan123NetdiskProvider({
       clientId: 'client-id',
       clientSecret: 'client-secret',
@@ -1059,11 +1274,9 @@ describe('createPan123NetdiskProvider', () => {
           const socketError = new Error('socket hang up')
           throw new TypeError('fetch failed', { cause: socketError })
         }
-
         throw new Error(`Unexpected request: ${url}`)
       },
     })
-
     await expect(provider.uploadAsset(request)).rejects.toMatchObject({
       diagnostics: {
         request: {
@@ -1077,11 +1290,9 @@ describe('createPan123NetdiskProvider', () => {
       },
     })
   })
-
   it('captures polling retry counters when async upload never completes', async () => {
     const request = await createUploadRequest()
     const directory = await createTempDirectory()
-
     const provider = createPan123NetdiskProvider({
       clientId: 'client-id',
       clientSecret: 'client-secret',
@@ -1097,6 +1308,7 @@ describe('createPan123NetdiskProvider', () => {
             message: 'ok',
             data: {
               accessToken: 'token-1',
+              uid: '10001',
               expiredAt: '2026-04-10T01:00:00.000Z',
             },
           })
@@ -1112,53 +1324,41 @@ describe('createPan123NetdiskProvider', () => {
           return createJsonResponse({
             code: 0,
             message: 'ok',
-            data: { list: [{ filename: 'syncer', dirID: 'target-dir' }] },
+            data: { list: [{ filename: 'syncer', dirID: '123' }] },
           })
         }
-        if (url.endsWith('/upload/v1/file/create')) {
+        if (url.endsWith('/upload/v2/file/create')) {
           return createJsonResponse({
             code: 0,
             message: 'ok',
-            data: { reuse: false, preuploadID: 'preupload-1', sliceSize: 1024 },
+            data: { reuse: false, servers: ['https://upload.123pan.example'], preuploadID: 'preupload-1', sliceSize: 1024 },
           })
         }
-        if (url.endsWith('/upload/v1/file/get_upload_url')) {
+        if (url.endsWith('/upload/v2/file/slice')) {
           return createJsonResponse({
             code: 0,
             message: 'ok',
-            data: { presignedURL: 'https://upload.123pan.example/part-1' },
+            data: {},
           })
         }
-        if (url === 'https://upload.123pan.example/part-1') {
-          return new Response(null, { status: 200 })
-        }
-        if (url.endsWith('/upload/v1/file/upload_complete')) {
+        if (url.endsWith('/upload/v2/file/upload_complete')) {
           return createJsonResponse({
             code: 0,
             message: 'ok',
             data: { async: true, completed: false },
           })
         }
-        if (url.endsWith('/upload/v1/file/upload_async_result')) {
-          return createJsonResponse({
-            code: 0,
-            message: 'ok',
-            data: { completed: false },
-          })
-        }
-
         throw new Error(`Unexpected request: ${url}`)
       },
     })
-
     await expect(provider.uploadAsset(request)).rejects.toMatchObject({
       diagnostics: {
         request: {
-          path: '/upload/v1/file/upload_async_result',
+          path: '/upload/v2/file/upload_complete',
         },
         retry: {
-          attempts: 2,
-          maxAttempts: 2,
+          attempts: 3,
+          maxAttempts: 3,
           intervalMs: 50,
           recentLogs: [
             expect.objectContaining({
@@ -1178,11 +1378,9 @@ describe('createPan123NetdiskProvider', () => {
       },
     })
   })
-
   it('keeps only the most recent three polling logs when async upload times out', async () => {
     const request = await createUploadRequest()
     const directory = await createTempDirectory()
-
     const provider = createPan123NetdiskProvider({
       clientId: 'client-id',
       clientSecret: 'client-secret',
@@ -1198,6 +1396,7 @@ describe('createPan123NetdiskProvider', () => {
             message: 'ok',
             data: {
               accessToken: 'token-1',
+              uid: '10001',
               expiredAt: '2026-04-10T01:00:00.000Z',
             },
           })
@@ -1213,59 +1412,44 @@ describe('createPan123NetdiskProvider', () => {
           return createJsonResponse({
             code: 0,
             message: 'ok',
-            data: { list: [{ filename: 'syncer', dirID: 'target-dir' }] },
+            data: { list: [{ filename: 'syncer', dirID: '123' }] },
           })
         }
-        if (url.endsWith('/upload/v1/file/create')) {
+        if (url.endsWith('/upload/v2/file/create')) {
           return createJsonResponse({
             code: 0,
             message: 'ok',
-            data: { reuse: false, preuploadID: 'preupload-1', sliceSize: 1024 },
+            data: { reuse: false, servers: ['https://upload.123pan.example'], preuploadID: 'preupload-1', sliceSize: 1024 },
           })
         }
-        if (url.endsWith('/upload/v1/file/get_upload_url')) {
+        if (url.endsWith('/upload/v2/file/slice')) {
           return createJsonResponse({
             code: 0,
             message: 'ok',
-            data: { presignedURL: 'https://upload.123pan.example/part-1' },
+            data: {},
           })
         }
-        if (url === 'https://upload.123pan.example/part-1') {
-          return new Response(null, { status: 200 })
-        }
-        if (url.endsWith('/upload/v1/file/upload_complete')) {
+        if (url.endsWith('/upload/v2/file/upload_complete')) {
           return createJsonResponse({
             code: 0,
             message: 'ok',
             data: { async: true, completed: false },
           })
         }
-        if (url.endsWith('/upload/v1/file/upload_async_result')) {
-          return createJsonResponse({
-            code: 0,
-            message: 'ok',
-            data: { completed: false },
-          })
-        }
-
         throw new Error(`Unexpected request: ${url}`)
       },
     })
-
     const error = (await provider.uploadAsset(request).catch(
       (cause) => cause as Pan123FailureLike,
     )) as Pan123FailureLike
-
     expect(error.diagnostics?.retry?.recentLogs).toHaveLength(3)
     expect(
       error.diagnostics?.retry?.recentLogs?.map((log) => log.attempt),
     ).toEqual([5, 4, 3])
   })
-
   it('redacts sensitive values in recent upload log messages', async () => {
     const request = await createUploadRequest()
     const directory = await createTempDirectory()
-
     const provider = createPan123NetdiskProvider({
       clientId: 'client-id',
       clientSecret: 'client-secret',
@@ -1279,6 +1463,7 @@ describe('createPan123NetdiskProvider', () => {
             message: 'ok',
             data: {
               accessToken: 'token-1',
+              uid: '10001',
               expiredAt: '2026-04-10T01:00:00.000Z',
             },
           })
@@ -1294,46 +1479,34 @@ describe('createPan123NetdiskProvider', () => {
           return createJsonResponse({
             code: 0,
             message: 'ok',
-            data: { list: [{ filename: 'syncer', dirID: 'target-dir' }] },
+            data: { list: [{ filename: 'syncer', dirID: '123' }] },
           })
         }
-        if (url.endsWith('/upload/v1/file/create')) {
+        if (url.endsWith('/upload/v2/file/create')) {
           return createJsonResponse({
             code: 0,
             message: 'ok',
-            data: { reuse: false, preuploadID: 'preupload-1', sliceSize: 1024 },
+            data: { reuse: false, servers: ['https://upload.123pan.example'], preuploadID: 'preupload-1', sliceSize: 1024 },
           })
         }
-        if (url.endsWith('/upload/v1/file/get_upload_url')) {
-          return createJsonResponse({
-            code: 0,
-            message: 'ok',
-            data: { presignedURL: 'https://upload.123pan.example/part-1' },
-          })
-        }
-        if (url === 'https://upload.123pan.example/part-1') {
+        if (url.endsWith('/upload/v2/file/slice')) {
           throw new TypeError('fetch failed token=secret-value')
         }
-
         throw new Error(`Unexpected request: ${url}`)
       },
     })
-
     const error = (await provider.uploadAsset(request).catch(
       (cause) => cause as Pan123FailureLike,
     )) as Pan123FailureLike
-
     expect(error.diagnostics?.retry?.recentLogs?.[0]?.message).toBe(
       'fetch failed token=[redacted]',
     )
     expect(error.diagnostics?.retry?.recentLogs?.[0]?.attempt).toBe(3)
   })
-
   it('retries transient directory creation failures and eventually succeeds', async () => {
     const request = await createUploadRequest()
     const directory = await createTempDirectory()
     let mkdirCallCount = 0
-
     const provider = createPan123NetdiskProvider({
       clientId: 'client-id',
       clientSecret: 'client-secret',
@@ -1347,6 +1520,7 @@ describe('createPan123NetdiskProvider', () => {
             message: 'ok',
             data: {
               accessToken: 'token-1',
+              uid: '10001',
               expiredAt: '2026-04-10T01:00:00.000Z',
             },
           })
@@ -1363,18 +1537,24 @@ describe('createPan123NetdiskProvider', () => {
           if (mkdirCallCount < 3) {
             return createJsonResponse({ code: 500, message: 'mkdir failed', data: null })
           }
-
           return createJsonResponse({
             code: 0,
             message: 'ok',
-            data: { list: [{ filename: 'syncer', dirID: 'target-dir' }] },
+            data: { list: [{ filename: 'syncer', dirID: '123' }] },
           })
         }
-        if (url.endsWith('/upload/v1/file/create')) {
+        if (url.endsWith('/upload/v2/file/create')) {
           return createJsonResponse({
             code: 0,
             message: 'ok',
             data: { reuse: true, fileID: 'remote-file-1' },
+          })
+        }
+        if (url.endsWith('/api/v1/share/content-payment/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { shareID: 87187531, shareKey: 'paid-share-key' },
           })
         }
         if (url.endsWith('/api/v1/share/create')) {
@@ -1397,10 +1577,10 @@ describe('createPan123NetdiskProvider', () => {
     expect(mkdirCallCount).toBe(4)
   })
 
-  it('retries transient PUT upload failures and eventually succeeds', async () => {
+  it('retries transient multipart upload failures and eventually succeeds', async () => {
     const request = await createUploadRequest()
     const directory = await createTempDirectory()
-    let putCallCount = 0
+    let sliceCallCount = 0
 
     const provider = createPan123NetdiskProvider({
       clientId: 'client-id',
@@ -1415,6 +1595,7 @@ describe('createPan123NetdiskProvider', () => {
             message: 'ok',
             data: {
               accessToken: 'token-1',
+              uid: '10001',
               expiredAt: '2026-04-10T01:00:00.000Z',
             },
           })
@@ -1430,36 +1611,40 @@ describe('createPan123NetdiskProvider', () => {
           return createJsonResponse({
             code: 0,
             message: 'ok',
-            data: { list: [{ filename: 'syncer', dirID: 'target-dir' }] },
+            data: { list: [{ filename: 'syncer', dirID: '123' }] },
           })
         }
-        if (url.endsWith('/upload/v1/file/create')) {
+        if (url.endsWith('/upload/v2/file/create')) {
           return createJsonResponse({
             code: 0,
             message: 'ok',
-            data: { reuse: false, preuploadID: 'preupload-1', sliceSize: 1024 },
+            data: { reuse: false, servers: ['https://upload.123pan.example'], preuploadID: 'preupload-1', sliceSize: 1024 },
           })
         }
-        if (url.endsWith('/upload/v1/file/get_upload_url')) {
-          return createJsonResponse({
-            code: 0,
-            message: 'ok',
-            data: { presignedURL: 'https://upload.123pan.example/part-1' },
-          })
-        }
-        if (url === 'https://upload.123pan.example/part-1') {
-          putCallCount += 1
-          if (putCallCount < 3) {
-            return new Response(null, { status: 500, statusText: 'temporary failure' })
+        if (url.endsWith('/upload/v2/file/slice')) {
+          sliceCallCount += 1
+          if (sliceCallCount < 3) {
+            return createJsonResponse(
+              { code: 500, message: 'temporary failure', data: null },
+              500,
+              'temporary failure',
+            )
           }
 
-          return new Response(null, { status: 200 })
+          return createJsonResponse({ code: 0, message: 'ok', data: {} })
         }
-        if (url.endsWith('/upload/v1/file/upload_complete')) {
+        if (url.endsWith('/upload/v2/file/upload_complete')) {
           return createJsonResponse({
             code: 0,
             message: 'ok',
             data: { async: false, completed: true, fileID: 'remote-file-1' },
+          })
+        }
+        if (url.endsWith('/api/v1/share/content-payment/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { shareID: 87187531, shareKey: 'paid-share-key' },
           })
         }
         if (url.endsWith('/api/v1/share/create')) {
@@ -1479,7 +1664,7 @@ describe('createPan123NetdiskProvider', () => {
       remoteFileId: 'remote-file-1',
       shareUrl: 'https://www.123pan.com/s/share-key',
     })
-    expect(putCallCount).toBe(3)
+    expect(sliceCallCount).toBe(3)
   })
 
   it('omits verbose headers and body excerpts in summary detail mode', async () => {
@@ -1531,6 +1716,7 @@ describe('createPan123NetdiskProvider', () => {
             message: 'ok',
             data: {
               accessToken: 'token-1',
+              uid: '10001',
               expiredAt: '2026-04-10T01:00:00.000Z',
             },
           })
@@ -1560,10 +1746,10 @@ describe('createPan123NetdiskProvider', () => {
           return createJsonResponse({
             code: 0,
             message: 'ok',
-            data: { list: [{ filename: 'ollama', dirID: 'target-dir' }] },
+            data: { list: [{ filename: 'ollama', dirID: '123' }] },
           })
         }
-        if (url.endsWith('/upload/v1/file/create')) {
+        if (url.endsWith('/upload/v2/file/create')) {
           return createJsonResponse({
             code: 5060,
             message: '该目录下文件名重复无法创建',
@@ -1593,6 +1779,13 @@ describe('createPan123NetdiskProvider', () => {
             },
           })
         }
+        if (url.endsWith('/api/v1/share/content-payment/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { shareID: 87187531, shareKey: 'paid-share-key' },
+          })
+        }
         if (url.endsWith('/api/v1/share/create')) {
           shareCreateCallCount += 1
           throw new Error('share/create should not be called when an active share already exists')
@@ -1606,6 +1799,7 @@ describe('createPan123NetdiskProvider', () => {
       providerName: '123pan',
       remoteFileId: 'existing-file-1',
       shareUrl: 'https://www.123pan.com/s/PvitVv-existing',
+      paidShareUrl: 'https://10001.share.123pan.cn/123pan/paid-share-key',
       uploadedAt: expect.any(String),
     })
     expect(shareCreateCallCount).toBe(0)
@@ -1636,6 +1830,7 @@ describe('createPan123NetdiskProvider', () => {
             message: 'ok',
             data: {
               accessToken: 'token-1',
+              uid: '10001',
               expiredAt: '2026-04-10T01:00:00.000Z',
             },
           })
@@ -1665,10 +1860,10 @@ describe('createPan123NetdiskProvider', () => {
           return createJsonResponse({
             code: 0,
             message: 'ok',
-            data: { list: [{ filename: 'ollama', dirID: 'target-dir' }] },
+            data: { list: [{ filename: 'ollama', dirID: '123' }] },
           })
         }
-        if (url.endsWith('/upload/v1/file/create')) {
+        if (url.endsWith('/upload/v2/file/create')) {
           return createJsonResponse({
             code: 5060,
             message: '该目录下文件名重复无法创建',
@@ -1690,6 +1885,13 @@ describe('createPan123NetdiskProvider', () => {
                 },
               ],
             },
+          })
+        }
+        if (url.endsWith('/api/v1/share/content-payment/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { shareID: 87187531, shareKey: 'paid-share-key' },
           })
         }
         if (url.endsWith('/api/v1/share/create')) {
@@ -1719,6 +1921,7 @@ describe('createPan123NetdiskProvider', () => {
       providerName: '123pan',
       remoteFileId: 'existing-file-1',
       shareUrl: 'https://www.123pan.com/s/PvitVv-duplicate',
+      paidShareUrl: 'https://10001.share.123pan.cn/123pan/paid-share-key',
       uploadedAt: expect.any(String),
     })
     expect(createShareRequest?.body).toEqual({
@@ -1744,6 +1947,7 @@ describe('createPan123NetdiskProvider', () => {
             message: 'ok',
             data: {
               accessToken: 'token-1',
+              uid: '10001',
               expiredAt: '2026-04-10T01:00:00.000Z',
             },
           })
@@ -1760,7 +1964,7 @@ describe('createPan123NetdiskProvider', () => {
                   ? []
                   : [
                       {
-                        fileId: 'target-dir',
+                        fileId: '123',
                         filename: 'syncer',
                         type: 1,
                       },
@@ -1773,15 +1977,22 @@ describe('createPan123NetdiskProvider', () => {
             code: 0,
             message: 'ok',
             data: {
-              list: [{ filename: 'syncer', dirID: 'target-dir' }],
+              list: [{ filename: 'syncer', dirID: '123' }],
             },
           })
         }
-        if (url.endsWith('/upload/v1/file/create')) {
+        if (url.endsWith('/upload/v2/file/create')) {
           return createJsonResponse({
             code: 0,
             message: 'ok',
             data: { reuse: true, fileID: 'remote-file-1' },
+          })
+        }
+        if (url.endsWith('/api/v1/share/content-payment/create')) {
+          return createJsonResponse({
+            code: 0,
+            message: 'ok',
+            data: { shareID: 87187531, shareKey: 'paid-share-key' },
           })
         }
         if (url.endsWith('/api/v1/share/create')) {
