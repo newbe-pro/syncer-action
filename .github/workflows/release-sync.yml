@@ -49,6 +49,8 @@ jobs:
         id: plan
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           NETDISK_123PAN_CLIENT_ID: ${{ secrets.NETDISK_123PAN_CLIENT_ID }}
           NETDISK_123PAN_CLIENT_SECRET: ${{ secrets.NETDISK_123PAN_CLIENT_SECRET }}
           SYNCER_ACTION_CONFIG_FILE: syncer-action.config.yml
@@ -82,6 +84,8 @@ jobs:
         id: sync
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           NETDISK_123PAN_CLIENT_ID: ${{ secrets.NETDISK_123PAN_CLIENT_ID }}
           NETDISK_123PAN_CLIENT_SECRET: ${{ secrets.NETDISK_123PAN_CLIENT_SECRET }}
           SYNCER_ACTION_CONFIG_FILE: syncer-action.config.yml
@@ -127,6 +131,8 @@ jobs:
         id: summarize
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           NETDISK_123PAN_CLIENT_ID: ${{ secrets.NETDISK_123PAN_CLIENT_ID }}
           NETDISK_123PAN_CLIENT_SECRET: ${{ secrets.NETDISK_123PAN_CLIENT_SECRET }}
           SYNCER_ACTION_CONFIG_FILE: syncer-action.config.yml
