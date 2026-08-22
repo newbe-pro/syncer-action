@@ -409,6 +409,32 @@ describe('createReleaseSyncRunner', () => {
     expect(metadataStore.saveManifest).not.toHaveBeenCalled()
   })
 
+  it('skips YAML assets before download, upload, share, or manifest writes', async () => {
+    const yamlAsset = { ...baseAsset, assetId: 207, assetName: 'nested/CONFIG.YAML' }
+    const metadataStore = {
+      loadManifest: vi.fn(async () => createManifest()),
+      loadManifestIndex: vi.fn(),
+      saveManifest: vi.fn(),
+    }
+    const source = {
+      targets: [targetRepository],
+      listReleaseAssets: vi.fn(async () => [yamlAsset]),
+      downloadAsset: vi.fn(),
+    }
+    const provider = { providerName: '123pan', uploadAsset: vi.fn() }
+    const summary = await createReleaseSyncRunner({ source, provider, metadataStore }).run()
+
+    expect(summary.skippedCount).toBe(1)
+    expect(summary.repositories[0]?.outcomes[0]).toMatchObject({
+      assetName: yamlAsset.assetName,
+      status: 'skipped',
+      message: expect.stringContaining('*.yaml'),
+    })
+    expect(source.downloadAsset).not.toHaveBeenCalled()
+    expect(provider.uploadAsset).not.toHaveBeenCalled()
+    expect(metadataStore.saveManifest).not.toHaveBeenCalled()
+  })
+
   it('continues syncing normal PowerToys installers that do not match exclusion rules', async () => {
     let persistedManifest = createManifestForRepository(
       powerToysRepository.key,

@@ -1,4 +1,8 @@
 import { describeLocalFile } from './file-digest'
+import {
+  defaultAssetBlacklistPatterns,
+  findMatchingAssetBlacklistPattern,
+} from './asset-blacklist'
 import { type GitHubReleaseSource } from './github-release-source'
 import {
   assertValidNetdiskUploadReceipt,
@@ -121,40 +125,6 @@ function isLatestReleaseAsset(asset: GitHubReleaseAsset) {
   return (
     asset.releaseId === asset.latestReleaseId &&
     asset.releaseTagName === asset.latestReleaseTagName
-  )
-}
-
-function escapeForRegularExpression(value: string) {
-  return value.replace(/[|\\{}()[\]^$+?.]/g, '\\$&')
-}
-
-function createCaseInsensitiveGlobRegExp(pattern: string) {
-  let regularExpression = '^'
-
-  for (const character of pattern) {
-    if (character === '*') {
-      regularExpression += '.*'
-      continue
-    }
-
-    if (character === '?') {
-      regularExpression += '.'
-      continue
-    }
-
-    regularExpression += escapeForRegularExpression(character)
-  }
-
-  regularExpression += '$'
-  return new RegExp(regularExpression, 'i')
-}
-
-function findMatchingAssetExcludePattern(
-  assetName: string,
-  assetExcludePatterns: string[] | undefined,
-) {
-  return assetExcludePatterns?.find((pattern) =>
-    createCaseInsensitiveGlobRegExp(pattern).test(assetName),
   )
 }
 
@@ -438,6 +408,7 @@ export function createReleaseSyncRunner(options: {
         }
         const resultByAssetId = new Map<number, ProcessedAssetResult>()
         let manifest: ReleaseSyncManifest | undefined
+        let manifestWriteQueue = Promise.resolve()
 
         async function ensureManifest(asset: GitHubReleaseAsset) {
           if (!manifest) {
@@ -448,6 +419,32 @@ export function createReleaseSyncRunner(options: {
           }
 
           return manifest
+        }
+
+        async function persistAssetResult(result: ProcessedAssetResult | undefined) {
+          if (!result?.record || !manifest) {
+            return
+          }
+
+          manifestWriteQueue = manifestWriteQueue.then(async () => {
+            const nextManifest = upsertManifestRecord(manifest!, result.record!)
+            logger.info?.(
+              `[release-sync] Persisting manifest for ${repository.key}@${nextManifest.releaseTagName ?? '<release-tag>'} after ${result.asset.assetName}...`,
+            )
+            try {
+              manifest = await options.metadataStore.saveManifest(nextManifest)
+              logger.info?.(
+                `[release-sync] Manifest persisted for ${repository.key} (${manifest.blobPath ?? 'in-memory'}).`,
+              )
+            } catch (error) {
+              metadataPublicationFailure = normalizeMetadataFailure(error, nextManifest)
+              logger.error?.(
+                `[release-sync] Metadata publication failed for ${repository.key}: ${metadataPublicationFailure.message}`,
+              )
+            }
+          })
+
+          await manifestWriteQueue
         }
 
         const eligibleAssets: Array<{
@@ -478,9 +475,9 @@ export function createReleaseSyncRunner(options: {
             continue
           }
 
-          const matchingAssetExcludePattern = findMatchingAssetExcludePattern(
+          const matchingAssetExcludePattern = findMatchingAssetBlacklistPattern(
             asset.assetName,
-            repository.assetExcludePatterns,
+            [...defaultAssetBlacklistPatterns, ...(repository.assetExcludePatterns ?? [])],
           )
           if (matchingAssetExcludePattern) {
             logger.info?.(
@@ -597,6 +594,7 @@ export function createReleaseSyncRunner(options: {
                     failureMessage: null,
                   }),
                 })
+                await persistAssetResult(resultByAssetId.get(asset.assetId))
                 return
               }
 
@@ -731,40 +729,12 @@ export function createReleaseSyncRunner(options: {
                 )
               }
             }
+
+            await persistAssetResult(resultByAssetId.get(asset.assetId))
           },
         )
 
-        if (manifest) {
-          let nextManifest = manifest
-          let hasManifestUpdates = false
-
-          for (const { asset } of eligibleAssets) {
-            const result = resultByAssetId.get(asset.assetId)
-            if (!result?.record) {
-              continue
-            }
-
-            hasManifestUpdates = true
-            nextManifest = upsertManifestRecord(nextManifest, result.record)
-          }
-
-          if (hasManifestUpdates) {
-            logger.info?.(
-              `[release-sync] Persisting manifest for ${repository.key}@${nextManifest.releaseTagName ?? '<release-tag>'}...`,
-            )
-            try {
-              manifest = await options.metadataStore.saveManifest(nextManifest)
-              logger.info?.(
-                `[release-sync] Manifest persisted for ${repository.key} (${(nextManifest.blobPath ?? 'in-memory')}).`,
-              )
-            } catch (error) {
-              metadataPublicationFailure = normalizeMetadataFailure(error, nextManifest)
-              logger.error?.(
-                `[release-sync] Metadata publication failed for ${repository.key}: ${metadataPublicationFailure.message}`,
-              )
-            }
-          }
-        }
+        await manifestWriteQueue
 
         for (const { asset } of eligibleAssets) {
           const result = resultByAssetId.get(asset.assetId)
@@ -804,11 +774,15 @@ export function createReleaseSyncRunner(options: {
         }
       }
 
-      if (metadataPublicationFailure) {
+      const finalMetadataPublicationFailure: MetadataPublicationFailure | null =
+        metadataPublicationFailure
+      const reportMetadataFailure = (failure: MetadataPublicationFailure | null) => {
+        if (!failure) return
         logger.error?.(
-          `[release-sync] Metadata publication failed for ${metadataPublicationFailure.repositoryKey}: ${metadataPublicationFailure.message}`,
+          `[release-sync] Metadata publication failed for ${failure.repositoryKey}: ${failure.message}`,
         )
       }
+      reportMetadataFailure(finalMetadataPublicationFailure)
 
       return {
         startedAt,
@@ -822,7 +796,7 @@ export function createReleaseSyncRunner(options: {
         failedCount: totals.failed,
         repositories,
         failures,
-        metadataPublicationFailure,
+        metadataPublicationFailure: finalMetadataPublicationFailure,
       }
     },
   }

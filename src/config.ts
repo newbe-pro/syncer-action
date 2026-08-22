@@ -2,6 +2,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { z } from 'zod'
+import {
+  defaultAssetBlacklistPatterns,
+  validateAssetBlacklistPattern,
+} from './asset-blacklist'
 import { type NetdiskErrorDetailLevel } from './release-sync-contracts'
 
 const githubRepositoryKeyPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
@@ -68,6 +72,7 @@ export interface SyncerActionConfig {
     }
   }
   repositories: SyncerActionRepository[]
+  assetBlacklistPatterns: string[]
   requiredSecrets: string[]
 }
 
@@ -81,12 +86,29 @@ const targetSchema = z.object({
 const repositorySchema = z.object({
   owner: z.string().trim().min(1),
   repo: z.string().trim().min(1),
-  assetExcludePatterns: z.array(z.string().trim().min(1)).default([]),
+  assetExcludePatterns: z
+    .array(
+      z
+        .string()
+        .trim()
+        .min(1)
+        .refine(validateAssetBlacklistPattern, 'must be a valid glob pattern'),
+    )
+    .default([]),
   targetDirectory: z.string().trim().min(1).optional(),
   targets: z.array(targetSchema).optional(),
 })
 
 const configSchema = z.object({
+  assetBlacklistPatterns: z
+    .array(
+      z
+        .string()
+        .trim()
+        .min(1)
+        .refine(validateAssetBlacklistPattern, 'must be a valid glob pattern'),
+    )
+    .default([...defaultAssetBlacklistPatterns]),
   github: z
     .object({
       apiBaseUrl: z.string().trim().url().optional(),
@@ -243,7 +265,7 @@ function normalizeRepositories(parsedConfig: z.infer<typeof configSchema>) {
       key,
       owner: repository.owner,
       repo: repository.repo,
-      assetExcludePatterns: repository.assetExcludePatterns,
+      assetExcludePatterns: [...parsedConfig.assetBlacklistPatterns, ...repository.assetExcludePatterns],
       targets: targets.map((target) => ({
         name: target.name,
         provider: target.provider,
@@ -274,6 +296,7 @@ function validateRequiredSecrets(input: {
   workflowMaxParallel: number
   maxParallelAssets: number
   configFilePath: string
+  assetBlacklistPatterns: string[]
 }) {
   const source = input.source
   const requiredSecrets: string[] = []
@@ -364,6 +387,7 @@ function validateRequiredSecrets(input: {
         },
       },
       repositories: input.repositories,
+      assetBlacklistPatterns: [...input.assetBlacklistPatterns],
       requiredSecrets,
     } satisfies SyncerActionConfig,
   }
@@ -388,26 +412,33 @@ export function loadSyncerActionConfig(options?: {
   const source = options?.source ?? process.env
   const configFilePath = resolveConfigFilePath(rootDirectory, source)
   const parsedConfig = parseConfigFile(configFilePath)
-  const repositories = normalizeRepositories(parsedConfig)
+  const effectiveConfig = {
+    ...parsedConfig,
+    assetBlacklistPatterns: [
+      ...new Set([...defaultAssetBlacklistPatterns, ...parsedConfig.assetBlacklistPatterns]),
+    ],
+  }
+  const repositories = normalizeRepositories(effectiveConfig)
 
   return validateRequiredSecrets({
     repositories,
+    assetBlacklistPatterns: effectiveConfig.assetBlacklistPatterns,
     source,
     rootDirectory,
-    pan123ErrorDetailLevel: parsedConfig.providers.pan123.errorDetailLevel,
-    pan123ApiBaseUrl: parsedConfig.providers.pan123.apiBaseUrl,
-    pan123Duplicate: parsedConfig.providers.pan123.duplicate,
-    pan123ContainDir: parsedConfig.providers.pan123.containDir,
-    pan123SingleStepUpload: parsedConfig.providers.pan123.singleStepUpload,
+    pan123ErrorDetailLevel: effectiveConfig.providers.pan123.errorDetailLevel,
+    pan123ApiBaseUrl: effectiveConfig.providers.pan123.apiBaseUrl,
+    pan123Duplicate: effectiveConfig.providers.pan123.duplicate,
+    pan123ContainDir: effectiveConfig.providers.pan123.containDir,
+    pan123SingleStepUpload: effectiveConfig.providers.pan123.singleStepUpload,
     metadataStorage: {
-      owner: parsedConfig.metadataStorage.owner,
-      repo: parsedConfig.metadataStorage.repo,
-      prefix: parsedConfig.metadataStorage.prefix,
-      releaseSelector: parsedConfig.metadataStorage.releaseSelector,
+      owner: effectiveConfig.metadataStorage.owner,
+      repo: effectiveConfig.metadataStorage.repo,
+      prefix: effectiveConfig.metadataStorage.prefix,
+      releaseSelector: effectiveConfig.metadataStorage.releaseSelector,
     },
-    githubApiBaseUrl: parsedConfig.github.apiBaseUrl ?? 'https://api.github.com',
-    workflowMaxParallel: parsedConfig.concurrency.workflowMaxParallel,
-    maxParallelAssets: parsedConfig.concurrency.maxParallelAssets,
+    githubApiBaseUrl: effectiveConfig.github.apiBaseUrl ?? 'https://api.github.com',
+    workflowMaxParallel: effectiveConfig.concurrency.workflowMaxParallel,
+    maxParallelAssets: effectiveConfig.concurrency.maxParallelAssets,
     configFilePath,
   }).config
 }

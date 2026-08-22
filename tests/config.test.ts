@@ -62,7 +62,7 @@ repositories:
     expect(config.repositories).toEqual([
       expect.objectContaining({
         key: 'openai/codex',
-        assetExcludePatterns: ['*symbols*'],
+        assetExcludePatterns: ['*.yaml', '*.yml', '*symbols*'],
         targets: [
           expect.objectContaining({
             name: '123pan-cn',
@@ -114,6 +114,8 @@ repositories:
       prefix: 'release-sync',
       releaseSelector: 'latest-draft',
     })
+    expect(config.assetBlacklistPatterns).toEqual(['*.yaml', '*.yml'])
+    expect(config.repositories[0]?.assetExcludePatterns).toEqual(['*.yaml', '*.yml'])
   })
 
   it('uses explicit metadataStorage owner/repo over GITHUB_REPOSITORY', async () => {
@@ -189,6 +191,20 @@ repositories:
 
     expect(config.repositories[0]?.key).toBe('openai/codex')
     expect(config.metadataStorage.prefix).toBe('release-sync')
+  })
+
+  it('rejects invalid blacklist pattern entries with a configuration error', async () => {
+    const rootDirectory = await createYamlWorkspace(`assetBlacklistPatterns:
+  - 123
+repositories: []
+`)
+
+    expect(() =>
+      loadSyncerActionConfig({
+        rootDirectory,
+        source: {},
+      }),
+    ).toThrow(/Failed to parse syncer-action config/)
   })
 })
 

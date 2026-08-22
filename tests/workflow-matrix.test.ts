@@ -21,6 +21,7 @@ const baseConfig: SyncerActionConfig = {
     workflowMaxParallel: 2,
     maxParallelAssets: 2,
   },
+  assetBlacklistPatterns: ['*.yaml', '*.yml'],
   providers: {
     pan123: {
       clientId: 'client-id',
