@@ -1,4 +1,4 @@
-import { createHash, createHmac } from 'node:crypto'
+import { AwsClient } from 'aws4fetch'
 import type {
   MetadataPublicationFailure, ReleaseSyncManifest, ReleaseSyncManifestIndex,
   ReleaseSyncManifestIndexRepositoryEntry, ReleaseSyncRecord,
@@ -31,22 +31,6 @@ const emptyManifest = (key: string, path: string, now: Date, tag?: string | null
   ({ repositoryKey: key, releaseTagName: tag ?? null, version: 1, updatedAt: now.toISOString(), records: [], blobPath: path }) satisfies ReleaseSyncManifest
 const emptyIndex = (path: string, now: Date) =>
   ({ version: 1, updatedAt: now.toISOString(), repositories: [], blobPath: path }) satisfies ReleaseSyncManifestIndex
-function sign(method: string, url: URL, body: string, key: string, secret: string) {
-  const hash = (v: string) => createHash('sha256').update(v).digest('hex')
-  const hmac = (k: string | Buffer, v: string) => createHmac('sha256', k).update(v).digest()
-  const date = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
-  const stamp = date.slice(0, 8), scope = `${stamp}/auto/s3/aws4_request`, payload = hash(body)
-  const canonicalUri = url.pathname.split('/').map((segment) => encodeURIComponent(decodeURIComponent(segment))).join('/')
-  const headers = `content-type:application/json\nhost:${url.host}\nx-amz-content-sha256:${payload}\nx-amz-date:${date}\n`
-  const signed = 'content-type;host;x-amz-content-sha256;x-amz-date'
-  const canonical = [method, canonicalUri, url.search.slice(1), headers, signed, payload].join('\n')
-  const signingKey = hmac(hmac(hmac(`AWS4${secret}`, stamp), 'auto'), 's3')
-  const stringToSign = `AWS4-HMAC-SHA256\n${date}\n${scope}\n${hash(canonical)}`
-  return {
-    Authorization: `AWS4-HMAC-SHA256 Credential=${key}/${scope}, SignedHeaders=${signed}, Signature=${hmac(signingKey, stringToSign).toString('hex')}`,
-    'x-amz-content-sha256': payload, 'x-amz-date': date,
-  }
-}
 function refresh(index: ReleaseSyncManifestIndex, manifest: ReleaseSyncManifest, path: string, updatedAt: string) {
   const groups = new Map<string, ReleaseSyncRecord[]>()
   for (const r of manifest.records) groups.set(r.releaseTagName, [...(groups.get(r.releaseTagName) ?? []), r])
@@ -70,17 +54,23 @@ export function createR2ManifestStore(options: { endpoint?: string; publicEndpoi
   const publicEndpoint = (options.publicEndpoint ?? DEFAULT_R2_PUBLIC_ENDPOINT).replace(/\/+$/, '')
   const prefix = (options.prefix ?? 'release-sync').replace(/^\/+|\/+$/g, '')
   const fetchImpl = options.fetchImpl ?? fetch, now = options.now ?? (() => new Date())
+  const r2Client = new AwsClient({
+    accessKeyId: options.accessKeyId,
+    secretAccessKey: options.secretAccessKey,
+    service: 's3',
+    region: 'auto',
+  })
   async function request(path: string, method: 'GET' | 'PUT', body = '') {
     const url = new URL(`${method === 'GET' ? publicEndpoint : endpoint}/${path.replace(/^\/+/, '')}`)
     let response: Response
     try {
-      response = await fetchImpl(url, {
-        method,
-        body: method === 'PUT' ? body : undefined,
-        headers: method === 'PUT'
-          ? { ...sign(method, url, body, options.accessKeyId, options.secretAccessKey), 'Content-Type': 'application/json' }
-          : {},
-      })
+      response = await (method === 'PUT'
+        ? fetchImpl(await r2Client.sign(url, {
+            method,
+            body,
+            headers: { 'Content-Type': 'application/json' },
+          }))
+        : fetchImpl(url, { method }))
     }
     catch (e) { throw new Error(`R2 ${method} ${path} network failure: ${message(e)}`, { cause: e }) }
     if (response.status === 404) return null
