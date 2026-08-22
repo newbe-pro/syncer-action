@@ -15,6 +15,7 @@ export class MetadataPublicationError extends Error {
   }
 }
 export const DEFAULT_R2_ENDPOINT = 'https://3128b6a4e4d5adb3f296e43f0963e60f.r2.cloudflarestorage.com/syncer'
+export const DEFAULT_R2_PUBLIC_ENDPOINT = 'https://syncer.hagicode.com'
 export function buildReleaseSyncManifestIndexBlobName(prefix = 'release-sync') { return `${prefix.replace(/\/+$/, '')}/index.json` }
 export function buildReleaseSyncManifestBlobName(repositoryKey: string, prefix = 'release-sync', _tag?: string | null) {
   const [owner, repo] = repositoryKey.split('/')
@@ -62,14 +63,24 @@ function refresh(index: ReleaseSyncManifestIndex, manifest: ReleaseSyncManifest,
   const entry: ReleaseSyncManifestIndexRepositoryEntry = { ...latest, owner, repo, displayName: manifest.repositoryKey, lastSuccessfulAt: releases.reduce<string | null>((a, r) => time(a, r.lastSuccessfulAt) >= 0 ? a : r.lastSuccessfulAt, null), releases }
   return { version: 1, updatedAt, repositories: [...index.repositories.filter(r => r.repositoryKey !== manifest.repositoryKey), entry].sort((a, b) => a.repositoryKey.localeCompare(b.repositoryKey)), blobPath: path }
 }
-export function createR2ManifestStore(options: { endpoint?: string; prefix?: string; accessKeyId: string; secretAccessKey: string; fetchImpl?: typeof fetch; now?: () => Date }): ReleaseSyncMetadataStore {
+export function createR2ManifestStore(options: { endpoint?: string; publicEndpoint?: string; prefix?: string; accessKeyId: string; secretAccessKey: string; fetchImpl?: typeof fetch; now?: () => Date }): ReleaseSyncMetadataStore {
   if (!options.accessKeyId.trim() || !options.secretAccessKey.trim()) throw new Error('R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY are required.')
-  const endpoint = (options.endpoint ?? DEFAULT_R2_ENDPOINT).replace(/\/+$/, ''), prefix = (options.prefix ?? 'release-sync').replace(/^\/+|\/+$/g, '')
+  const endpoint = (options.endpoint ?? DEFAULT_R2_ENDPOINT).replace(/\/+$/, '')
+  const publicEndpoint = (options.publicEndpoint ?? DEFAULT_R2_PUBLIC_ENDPOINT).replace(/\/+$/, '')
+  const prefix = (options.prefix ?? 'release-sync').replace(/^\/+|\/+$/g, '')
   const fetchImpl = options.fetchImpl ?? fetch, now = options.now ?? (() => new Date())
   async function request(path: string, method: 'GET' | 'PUT', body = '') {
-    const url = new URL(`${endpoint}/${path.replace(/^\/+/, '')}`)
+    const url = new URL(`${method === 'GET' ? publicEndpoint : endpoint}/${path.replace(/^\/+/, '')}`)
     let response: Response
-    try { response = await fetchImpl(url, { method, body: method === 'PUT' ? body : undefined, headers: { ...sign(method, url, body, options.accessKeyId, options.secretAccessKey), ...(method === 'PUT' ? { 'Content-Type': 'application/json' } : {}) } }) }
+    try {
+      response = await fetchImpl(url, {
+        method,
+        body: method === 'PUT' ? body : undefined,
+        headers: method === 'PUT'
+          ? { ...sign(method, url, body, options.accessKeyId, options.secretAccessKey), 'Content-Type': 'application/json' }
+          : {},
+      })
+    }
     catch (e) { throw new Error(`R2 ${method} ${path} network failure: ${message(e)}`, { cause: e }) }
     if (response.status === 404) return null
     if (!response.ok) throw new Error(`R2 ${method} ${path} failed (${response.status} ${response.statusText}): ${(await response.text().catch(() => '')).slice(0, 500)}`)
