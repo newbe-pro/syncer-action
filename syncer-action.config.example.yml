@@ -1,6 +1,10 @@
 github:
   apiBaseUrl: https://api.github.com
 
+assetBlacklistPatterns:
+  - "*.yaml"
+  - "*.yml"
+
 metadataStorage:
   prefix: release-sync
   releaseSelector: latest-draft
