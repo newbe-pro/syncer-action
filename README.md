@@ -51,6 +51,13 @@ repositories:
 
 For the 123Pan provider, each successfully synchronized asset creates both the regular share URL and a paid share URL. The paid URL uses a fixed amount of 2 yuan and requires a 123Pan UID in the authenticated token response.
 
+Uploads use the 123Pan v2 create/slice/complete API. Requests include the
+`Platform: open_platform` header and bearer authorization. The provider
+validates names (under 255 characters and without `"\\/:*?|><`) and rejects
+files larger than 10 GiB. Set `providers.pan123.singleStepUpload: true` for
+the v2 multipart single-step endpoint; otherwise uploads use serial MD5
+slices and completion polling.
+
 ## Draft Release Metadata Paths
 
 Logical storage paths (serialized as `blobPath` in JSON; not Azure Blob paths):
