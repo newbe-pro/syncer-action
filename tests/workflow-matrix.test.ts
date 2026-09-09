@@ -28,6 +28,7 @@ const baseConfig: SyncerActionConfig = {
       clientSecret: 'client-secret',
       tokenCachePath: '/workspace/.runtime/123pan-access-token.json',
       errorDetailLevel: 'diagnostic',
+      paidShareEnabled: false,
     },
   },
   repositories: [

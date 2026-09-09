@@ -129,7 +129,7 @@ export interface NetdiskUploadReceipt {
   providerName: string
   remoteFileId: string
   shareUrl: string
-  paidShareUrl?: string
+  paidShareUrl?: string | null
   uploadedAt: string
 }
 

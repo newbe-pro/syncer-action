@@ -229,12 +229,14 @@ async function captureCreateFileRequest(assetName: string) {
     },
   })
 
-  await provider.uploadAsset({
+  await expect(provider.uploadAsset({
     ...request,
     destination: {
       repositoryKey: request.destination.repositoryKey,
       targetDirectory: '/ollama',
     },
+  })).resolves.toMatchObject({
+    paidShareUrl: null,
   })
 
   return createFileRequest
@@ -386,13 +388,7 @@ describe('createPan123NetdiskProvider', () => {
           fileIDList: 'remote-file-1',
         },
       })
-      expect(createPaidShareRequest).toEqual({
-        body: {
-          shareName: assetName,
-          fileIDList: 'remote-file-1',
-          payAmount: 2,
-        },
-      })
+      expect(createPaidShareRequest).toBeUndefined()
     },
   )
 
@@ -405,6 +401,7 @@ describe('createPan123NetdiskProvider', () => {
       clientId: 'client-id',
       clientSecret: 'client-secret',
       tokenCachePath: path.join(directory, 'token-cache.json'),
+      paidShareEnabled: true,
       fetch: async (input, init) => {
         const url = typeof input === 'string' ? input : input.toString()
 
@@ -486,6 +483,7 @@ describe('createPan123NetdiskProvider', () => {
       clientSecret: 'client-secret',
       uid: '10001',
       tokenCachePath: path.join(directory, 'token-cache.json'),
+      paidShareEnabled: true,
       fetch: async (input, init) => {
         const url = typeof input === 'string' ? input : input.toString()
 
@@ -557,6 +555,7 @@ describe('createPan123NetdiskProvider', () => {
       clientId: 'client-id',
       clientSecret: 'client-secret',
       tokenCachePath: path.join(directory, 'token-cache.json'),
+      paidShareEnabled: true,
       fetch: async (input, init) => {
         const url = typeof input === 'string' ? input : input.toString()
 
@@ -685,6 +684,7 @@ describe('createPan123NetdiskProvider', () => {
       clientId: 'client-id',
       clientSecret: 'client-secret',
       tokenCachePath,
+      paidShareEnabled: true,
       now: () => new Date('2026-04-10T00:00:00.000Z'),
       sleep: async () => {},
       fetch: async (input, init) => {
@@ -1018,6 +1018,7 @@ describe('createPan123NetdiskProvider', () => {
       clientSecret: 'client-secret',
       tokenCachePath: path.join(directory, 'token-cache.json'),
       singleStepUpload: true,
+      paidShareEnabled: true,
       duplicate: 2,
       containDir: true,
       now: () => new Date('2026-04-10T00:00:00.000Z'),
@@ -1111,6 +1112,7 @@ describe('createPan123NetdiskProvider', () => {
       clientId: 'client-id',
       clientSecret: 'client-secret',
       tokenCachePath: path.join(directory, 'token-cache.json'),
+      paidShareEnabled: true,
       fetch: async (input) => {
         const url = typeof input === 'string' ? input : input.toString()
         if (url.endsWith('/api/v1/access_token')) {
@@ -1149,6 +1151,7 @@ describe('createPan123NetdiskProvider', () => {
       clientId: 'client-id',
       clientSecret: 'client-secret',
       tokenCachePath: path.join(directory, 'token-cache.json'),
+      paidShareEnabled: true,
       sleep: async () => {},
       fetch: async (input) => {
         const url = typeof input === 'string' ? input : input.toString()
@@ -1201,6 +1204,7 @@ describe('createPan123NetdiskProvider', () => {
       clientId: 'client-id',
       clientSecret: 'client-secret',
       tokenCachePath: path.join(directory, 'token-cache.json'),
+      paidShareEnabled: true,
       sleep: async () => {},
       fetch: async (input) => {
         const url = typeof input === 'string' ? input : input.toString()
@@ -1852,6 +1856,7 @@ describe('createPan123NetdiskProvider', () => {
       clientId: 'client-id',
       clientSecret: 'client-secret',
       tokenCachePath: path.join(directory, 'token-cache.json'),
+      paidShareEnabled: true,
       fetch: async (input) => {
         const url = typeof input === 'string' ? input : input.toString()
         if (url.endsWith('/api/v1/access_token')) {
@@ -1966,6 +1971,7 @@ describe('createPan123NetdiskProvider', () => {
       clientId: 'client-id',
       clientSecret: 'client-secret',
       tokenCachePath: path.join(directory, 'token-cache.json'),
+      paidShareEnabled: true,
       fetch: async (input, init) => {
         const url = typeof input === 'string' ? input : input.toString()
         if (url.endsWith('/api/v1/access_token')) {
@@ -2083,6 +2089,7 @@ describe('createPan123NetdiskProvider', () => {
       clientId: 'client-id',
       clientSecret: 'client-secret',
       tokenCachePath: path.join(directory, 'token-cache.json'),
+      paidShareEnabled: true,
       fetch: async (input) => {
         const url = typeof input === 'string' ? input : input.toString()
         if (url.endsWith('/api/v1/access_token')) {

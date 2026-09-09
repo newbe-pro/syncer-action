@@ -69,6 +69,7 @@ export interface SyncerActionConfig {
       duplicate?: number
       containDir?: boolean
       singleStepUpload?: boolean
+      paidShareEnabled: boolean
     }
   }
   repositories: SyncerActionRepository[]
@@ -137,10 +138,11 @@ const configSchema = z.object({
           duplicate: z.number().int().nonnegative().optional(),
           containDir: z.boolean().optional(),
           singleStepUpload: z.boolean().optional(),
+          paidShareEnabled: z.boolean().default(false),
         })
-        .default({ errorDetailLevel: 'diagnostic' }),
+        .default({ errorDetailLevel: 'diagnostic', paidShareEnabled: false }),
     })
-    .default({ pan123: { errorDetailLevel: 'diagnostic' } }),
+    .default({ pan123: { errorDetailLevel: 'diagnostic', paidShareEnabled: false } }),
   repositories: z.array(repositorySchema).default([]),
 })
 
@@ -286,6 +288,7 @@ function validateRequiredSecrets(input: {
   pan123Duplicate?: number
   pan123ContainDir?: boolean
   pan123SingleStepUpload?: boolean
+  pan123PaidShareEnabled: boolean
   metadataStorage: {
     owner?: string
     repo?: string
@@ -384,6 +387,7 @@ function validateRequiredSecrets(input: {
           duplicate: input.pan123Duplicate,
           containDir: input.pan123ContainDir,
           singleStepUpload: input.pan123SingleStepUpload,
+          paidShareEnabled: input.pan123PaidShareEnabled,
         },
       },
       repositories: input.repositories,
@@ -430,6 +434,7 @@ export function loadSyncerActionConfig(options?: {
     pan123Duplicate: effectiveConfig.providers.pan123.duplicate,
     pan123ContainDir: effectiveConfig.providers.pan123.containDir,
     pan123SingleStepUpload: effectiveConfig.providers.pan123.singleStepUpload,
+    pan123PaidShareEnabled: effectiveConfig.providers.pan123.paidShareEnabled ?? false,
     metadataStorage: {
       owner: effectiveConfig.metadataStorage.owner,
       repo: effectiveConfig.metadataStorage.repo,

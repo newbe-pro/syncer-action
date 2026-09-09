@@ -88,6 +88,31 @@ repositories:
       'NETDISK_123PAN_CLIENT_SECRET',
       'NETDISK_123PAN_UID',
     ])
+    expect(config.providers.pan123.paidShareEnabled).toBe(false)
+  })
+
+  it('defaults paid shares off and allows explicitly enabling them', async () => {
+    const rootDirectory = await createYamlWorkspace(`providers:
+  pan123:
+    paidShareEnabled: true
+repositories:
+  - owner: openai
+    repo: codex
+    targetDirectory: /syncer/codex
+`)
+
+    const config = loadSyncerActionConfig({
+      rootDirectory,
+      source: {
+        NETDISK_123PAN_CLIENT_ID: 'client-id',
+        NETDISK_123PAN_CLIENT_SECRET: 'client-secret',
+        NETDISK_123PAN_UID: '10001',
+        GITHUB_TOKEN: 'gh-token',
+        GITHUB_REPOSITORY: 'acme/syncer-action',
+      },
+    })
+
+    expect(config.providers.pan123.paidShareEnabled).toBe(true)
   })
 
   it('defaults metadataStorage prefix and releaseSelector', async () => {

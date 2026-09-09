@@ -145,6 +145,7 @@ export interface Pan123ProviderOptions {
   duplicate?: number
   containDir?: boolean
   singleStepUpload?: boolean
+  paidShareEnabled?: boolean
 }
 
 function normalizeApiBaseUrl(value: string | undefined) {
@@ -1358,7 +1359,9 @@ export function createPan123Provider(
 
     return {
       shareUrl: `${defaultShareBaseUrl}${createdShare.shareKey}`,
-      paidShareUrl: await createPaidShareUrl(token, request, remoteFileId, shareName),
+      paidShareUrl: options.paidShareEnabled
+        ? await createPaidShareUrl(token, request, remoteFileId, shareName)
+        : null,
     }
   }
 
@@ -1429,12 +1432,14 @@ export function createPan123Provider(
     const shareUrls = existingShareUrl
       ? {
           shareUrl: existingShareUrl,
-          paidShareUrl: await createPaidShareUrl(
-            token,
-            request,
-            remoteFileId,
-            requireShareName(request.asset.assetName, request),
-          ),
+          paidShareUrl: options.paidShareEnabled
+            ? await createPaidShareUrl(
+                token,
+                request,
+                remoteFileId,
+                requireShareName(request.asset.assetName, request),
+              )
+            : null,
         }
       : await createShareUrls(token, request, remoteFileId)
 
