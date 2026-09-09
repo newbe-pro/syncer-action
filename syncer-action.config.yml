@@ -18,6 +18,7 @@ providers:
   pan123:
     errorDetailLevel: diagnostic
     apiBaseUrl: https://open-api.123pan.com
+    paidShareEnabled: false
 
 repositories:
   - owner: esengine

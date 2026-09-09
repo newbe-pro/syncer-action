@@ -20,6 +20,8 @@ providers:
     apiBaseUrl: https://open-api.123pan.com
     containDir: false
     singleStepUpload: false
+    # Paid shares are disabled by default; set true to re-enable them.
+    paidShareEnabled: false
 
 repositories:
   - owner: microsoft
