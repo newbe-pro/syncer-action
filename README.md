@@ -62,7 +62,7 @@ For upload deduplication, the runner reuses a manifest record when its status is
 `shareUrl` for the 123Pan file. A missing `sha256` no longer causes an already
 synchronized asset to be uploaded again.
 
-For the 123Pan provider, each successfully synchronized asset creates both the regular share URL and a paid share URL. The paid URL uses a fixed amount of 2 yuan and requires the `NETDISK_123PAN_UID` secret to build the official URL format.
+For the 123Pan provider, each successfully synchronized asset creates a regular share URL. Paid-share generation is controlled by `providers.pan123.paidShareEnabled` and defaults to `false`, so the sync stage does not call the paid-share API unless explicitly enabled. To restore paid shares, set this flag to `true` in `syncer-action.config.yml`; no code change is required. When enabled, the paid URL uses a fixed amount of 2 yuan and requires the `NETDISK_123PAN_UID` secret to build the official URL format.
 
 Uploads use the 123Pan v2 create/slice/complete API. Requests include the
 `Platform: open_platform` header and bearer authorization. The provider
