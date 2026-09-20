@@ -100,3 +100,7 @@ repositories:
   - owner: OpenAgentPlatform
     repo: Dive
     targetDirectory: /syncer/dive
+
+  - owner: nilaoda
+    repo: N_m3u8DL-CLI
+    targetDirectory: /syncer/N_m3u8DL-CLI
